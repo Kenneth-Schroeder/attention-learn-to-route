@@ -128,13 +128,15 @@ class AttentionModel(nn.Module):
         using DataParallel as the results may be of different lengths on different GPUs
         :return:
         """
+        print("//////")
+        print(input.shape)
 
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
             embeddings, _ = checkpoint(self.embedder, self._init_embed(input))
         else:
-            embeddings, _ = self.embedder(self._init_embed(input))
+            embeddings, _ = self.embedder(self._init_embed(input)) # EMBEDDER IS GRAPH ATTENTION ENCODER!
 
-        _log_p, pi = self._inner(input, embeddings)
+        _log_p, pi = self._inner(input, embeddings) # INNER HAS TO BE THE DECODER
 
         cost, mask = self.problem.get_costs(input, pi)
         # Log likelyhood is calculated within the model since returning it per action does not work well with
@@ -227,8 +229,12 @@ class AttentionModel(nn.Module):
         sequences = []
 
         state = self.problem.make_state(input)
+        print("///")
+        #print(state)
+        print(type(state))
 
-        # Compute keys, values for the glimpse and keys for the logits once as they can be reused in every step
+        # Compute keys, values for the glimpse MHA calculation and keys for the logits calculation once, 
+        # as they can be reused in every step (only the queries change)
         fixed = self._precompute(embeddings)
 
         batch_size = state.ids.size(0)
@@ -249,7 +255,7 @@ class AttentionModel(nn.Module):
                     state = state[unfinished]
                     fixed = fixed[unfinished]
 
-            log_p, mask = self._get_log_p(fixed, state)
+            log_p, mask = self._get_log_p(fixed, state) # THIS IS WHERE THE MAGIC HAPPENS? it takes the precomputed fixed values and a state
 
             # Select the indices of the next nodes in the sequences, result (batch_size) long
             selected = self._select_node(log_p.exp()[:, 0, :], mask[:, 0, :])  # Squeeze out steps dimension
@@ -344,7 +350,7 @@ class AttentionModel(nn.Module):
 
     def _get_log_p(self, fixed, state, normalize=True):
 
-        # Compute query = context node embedding
+        # Compute first query = CONTEXT NODE embedding
         query = fixed.context_node_projected + \
                 self.project_step_context(self._get_parallel_step_context(fixed.node_embeddings, state))
 
@@ -355,7 +361,7 @@ class AttentionModel(nn.Module):
         mask = state.get_mask()
 
         # Compute logits (unnormalized log_p)
-        log_p, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
+        log_p, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask) # HERE HAPPENS THE FINAL MAGIC? all values ready
 
         if normalize:
             log_p = torch.log_softmax(log_p / self.temp, dim=-1)
@@ -453,28 +459,30 @@ class AttentionModel(nn.Module):
         batch_size, num_steps, embed_dim = query.size()
         key_size = val_size = embed_dim // self.n_heads
 
-        # Compute the glimpse, rearrange dimensions so the dimensions are (n_heads, batch_size, num_steps, 1, key_size)
+        # Prepare the glimpse QUERY, rearrange dimensions so the dimensions are (n_heads, batch_size, num_steps, 1, key_size)
+        # before the permutation was ( batch_size, num_steps, n_heads, 1, key_size) -> just moved n_heads to the front
         glimpse_Q = query.view(batch_size, num_steps, self.n_heads, 1, key_size).permute(2, 0, 1, 3, 4)
 
-        # Batch matrix multiplication to compute compatibilities (n_heads, batch_size, num_steps, graph_size)
-        compatibility = torch.matmul(glimpse_Q, glimpse_K.transpose(-2, -1)) / math.sqrt(glimpse_Q.size(-1))
+        # Batch matrix multiplication to compute COMPATIBILITIES (n_heads, batch_size, num_steps, graph_size)
+        compatibility = torch.matmul(glimpse_Q, glimpse_K.transpose(-2, -1)) / math.sqrt(glimpse_Q.size(-1)) # basically dot product!? and sqrt term is normalization
         if self.mask_inner:
             assert self.mask_logits, "Cannot mask inner without masking logits"
-            compatibility[mask[None, :, :, None, :].expand_as(compatibility)] = -math.inf
+            compatibility[mask[None, :, :, None, :].expand_as(compatibility)] = -math.inf # MINUS INF FOR ALREADY VISITED NODES
 
         # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size)
-        heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)
+        heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V) # WEIGHTED AVERAGE CALCULATED ACC TO VALUES AND COMPATIBILITY
 
-        # Project to get glimpse/updated context node embedding (batch_size, num_steps, embedding_dim)
-        glimpse = self.project_out(
+        # Project to get GLIMPSE/updated context node embedding (batch_size, num_steps, embedding_dim)
+        glimpse = self.project_out( # just a Linear Layer
             heads.permute(1, 2, 3, 0, 4).contiguous().view(-1, num_steps, 1, self.n_heads * val_size))
 
         # Now projecting the glimpse is not needed since this can be absorbed into project_out
         # final_Q = self.project_glimpse(glimpse)
-        final_Q = glimpse
+        final_Q = glimpse # FINAL QUERY
+
         # Batch matrix multiplication to compute logits (batch_size, num_steps, graph_size)
-        # logits = 'compatibility'
-        logits = torch.matmul(final_Q, logit_K.transpose(-2, -1)).squeeze(-2) / math.sqrt(final_Q.size(-1))
+        # logits = 'COMPATIBILITY'
+        logits = torch.matmul(final_Q, logit_K.transpose(-2, -1)).squeeze(-2) / math.sqrt(final_Q.size(-1)) # COMPATIBILITY OF QUERY AND KEYS
 
         # From the logits compute the probabilities by clipping, masking and softmax
         if self.tanh_clipping > 0:
