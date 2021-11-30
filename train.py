@@ -11,7 +11,8 @@ from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
 from utils import move_to
 
-from tianshou.data import ReplayBuffer
+from tianshou.data import ReplayBuffer, Batch # tianshou.data.batch.
+from tianshou.policy import SACPolicy
 
 
 def get_inner_model(model):
@@ -130,7 +131,7 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
 
 # ReplayBuffer(size=9)
 # buf.add(obs=i, act=i, rew=i, done=i, obs_next=i + 1, info={})
-def train_epoch_sac(model, buffer: ReplayBuffer, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
+def train_epoch_sac(model, sac_model: SACPolicy, buffer: ReplayBuffer, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
     print("Start train epoch {}, lr={} for run {}".format(epoch, optimizer.param_groups[0]['lr'], opts.run_name))
     step = epoch * (opts.epoch_size // opts.batch_size)
     start_time = time.time()
@@ -144,25 +145,33 @@ def train_epoch_sac(model, buffer: ReplayBuffer, optimizer, baseline, lr_schedul
     training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size, num_workers=1)
 
     # Put model in train mode!
-    model.train()
+    model.train() # TODO check if this is necessary
     set_decode_type(model, "sampling")
 
     for batch_id, batch in enumerate(tqdm(training_dataloader, disable=opts.no_progress_bar)):
 
         collect_experience_sac(
-            model, 
+            model, # todo use random policy or sac model
             buffer,
-            batch
+            problem,
+            batch,
+            opts
         )
 
+        discount = 1.0
+        experience_batch_size = 256
+        experience_batch = sample_buffer(buffer, experience_batch_size)
+        #print(type(experience_batch))
+        #print(experience_batch.obs.shape) # 256, 1 tuple
+        #print(experience_batch.obs[0])
+
         train_batch_sac(
-            model,
-            optimizer,
-            baseline,
-            epoch,
-            batch_id,
-            step,
-            batch,
+            sac_model,
+            discount,
+            epoch, # this should be fine
+            batch_id, # this should be fine too
+            step, # todo fix this value
+            experience_batch,
             tb_logger,
             opts
         )
@@ -195,71 +204,91 @@ def train_epoch_sac(model, buffer: ReplayBuffer, optimizer, baseline, lr_schedul
     # lr_scheduler should be called at end of epoch
     lr_scheduler.step()
 
+def sample_buffer(buffer: ReplayBuffer, count):
+    batch, ids = buffer.sample(batch_size=count)
+
+    #print(batch)
+    #print(type(batch))
+    #print(batch.obs_next.i)
+    return batch
 
 
 def collect_experience_sac(
         model,
         buffer: ReplayBuffer,
-        batch
+        problem,
+        input_batch,
+        opts
 ):
     print("collecting experience")
+    
+    x = input_batch # TODO remove baseline stuff from batch - not needed anymore in sac - some baselines use batch['data'] here
+    x = move_to(x, opts.device)
 
-    x, bl_val = baseline.unwrap_batch(batch)
+    prev_state = problem.make_state(x)
+    #prev_state.loc = move_to(prev_state.loc, opts.device)
 
-    state = self.problem.make_state(x)
-    print("///")
-    print(state)
+    j = 0
+    while not prev_state.all_finished():
+        # Input to model will not be just a graph anymore, but rather an observation -> partially solved graph, i.e. state
+        # try to input a tianshou batch here instead of a tsp state
+        # first try to only use the state, without x, since x should be in state loc
+        cost, state, probs = model(prev_state)
 
-    # Input to model will not be just a graph anymore, but rather an observation -> partially solved graph, i.e. state
+        for i in range(x.shape[0]): # iterate over the whole batch and save each last step to replay buffer
+            s = prev_state[torch.tensor(i)]
+            s_next = state[torch.tensor(i)]
 
-    # Compute keys, values for the glimpse MHA calculation and keys for the logits calculation once, 
-    # as they can be reused in every step (only the queries change)
-    fixed = self._precompute(embeddings)
+            # Note: batch expects tensors at the leaves. converting states to dicts with tensors at leaves
+            # see https://tianshou.readthedocs.io/en/master/tutorials/batch.html
+            obs = s.asdict()
+            obs_next = s_next.asdict()
 
-    batch_size = state.ids.size(0)
+            b = Batch(obs=obs, act=s_next.prev_a, rew=-cost[i].item(), done=s_next.all_finished(), obs_next=obs_next, info={})
+            # buffer doesnt like getting None once and then actual elements later
+            buffer.add(b)
 
-    # Perform decoding steps
-    i = 0
-    while not (self.shrink_size is None and state.all_finished()):
-
-        if self.shrink_size is not None:
-            unfinished = torch.nonzero(state.get_finished() == 0)
-            if len(unfinished) == 0:
-                break
-            unfinished = unfinished[:, 0]
-            # Check if we can shrink by at least shrink_size and if this leaves at least 16
-            # (otherwise batch norm will not work well and it is inefficient anyway)
-            if 16 <= len(unfinished) <= state.ids.size(0) - self.shrink_size:
-                # Filter states
-                state = state[unfinished]
-                fixed = fixed[unfinished]
-
-        log_p, mask = self._get_log_p(fixed, state) # THIS IS WHERE THE MAGIC HAPPENS? it takes the precomputed fixed values and a state
-
-        # Select the indices of the next nodes in the sequences, result (batch_size) long
-        selected = self._select_node(log_p.exp()[:, 0, :], mask[:, 0, :])  # Squeeze out steps dimension
-
-        state = state.update(selected)
-
-        # Now make log_p, selected desired output size by 'unshrinking'
-        if self.shrink_size is not None and state.ids.size(0) < batch_size:
-            log_p_, selected_ = log_p, selected
-            log_p = log_p_.new_zeros(batch_size, *log_p_.size()[1:])
-            selected = selected_.new_zeros(batch_size)
-
-            log_p[state.ids[:, 0]] = log_p_
-            selected[state.ids[:, 0]] = selected_
-
-        # Collect output of step
-        outputs.append(log_p[:, 0, :])
-        sequences.append(selected)
-
-        i += 1
-
-    # Collected lists, return Tensor
-    return torch.stack(outputs, 1), torch.stack(sequences, 1)
+        prev_state = state
+        print(j)
+        j += 1
 
 
+def train_batch_sac(
+        sac_model: SACPolicy,
+        discount,
+        epoch, # this should be fine
+        batch_id, # this should be fine too
+        step, # todo fix this value
+        experience_batch: Batch,
+        tb_logger,
+        opts
+):
+    # TODO
+    print("training SAC")
+
+    # CANT I USE TIANSHOU SAC? - only need to define the models and optimizers
+
+    # update state-value estimator
+    # gradient of: V(s) * (V(s) - Q(a|s) + log p(a|s))
+    
+    #state_value_loss = v_model(experience_batch.obs) * 
+    #                  (v_model(experience_batch.obs) - 
+    #                   q_model(experience_batch.act, experience_batch.obs) + 
+    #                   log(policy_model(experience_batch.act, experience_batch.obs)))
+
+    # update q-value estimator (TODO use two q-value estimators)
+    # gradient of: Q(a|s) * (Q(a|s) - r(a|s) - gamma* V`(s+1))
+    #q_value_loss = q_model(experience_batch.act, experience_batch.obs) * 
+    #              (q_model(experience_batch.act, experience_batch.obs) - 
+    #               experience_batch.rew - discount * v_moving(experience_batch.obs_next))
+
+    # update policy estimator
+    # KL divergence or trick ....
+
+    # update moving average state-value
+
+
+    
 
 def train_batch(
         model,

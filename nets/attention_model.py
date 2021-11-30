@@ -10,6 +10,10 @@ from torch.nn import DataParallel
 from utils.beam_search import CachedLookup
 from utils.functions import sample_many
 
+from problems.tsp.state_tsp import StateTSP
+from utils import move_to
+from tianshou.policy import BasePolicy
+
 
 def set_decode_type(model, decode_type):
     if isinstance(model, DataParallel):
@@ -121,31 +125,35 @@ class AttentionModel(nn.Module):
         if temp is not None:  # Do not change temperature if not provided
             self.temp = temp
 
-    def forward(self, input, return_pi=False):
+    # forward(batch: tianshou.data.batch.Batch, state: Optional[Union[dict, tianshou.data.batch.Batch, numpy.ndarray]] = None, **kwargs: Any)
+    # return logits as tuple and second unused variable h
+    # what I have: obs of a batch -> print(experience_batch.obs.shape) # 256, 1 tuple
+    # what I used: one StateTSP with loc and some other variables in _inner and get_step_cost
+    
+    def forward(self, state: StateTSP): # batch: tianshou.data.batch.Batch) 
         """
         :param input: (batch_size, graph_size, node_dim) input node features or dictionary with multiple tensors
-        :param return_pi: whether to return the output sequences, this is optional as it is not compatible with
-        using DataParallel as the results may be of different lengths on different GPUs
-        :return:
         """
-        print("//////")
-        print(input.shape)
 
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
-            embeddings, _ = checkpoint(self.embedder, self._init_embed(input))
+            embeddings, _ = checkpoint(self.embedder, self._init_embed(state.loc))
         else:
-            embeddings, _ = self.embedder(self._init_embed(input)) # EMBEDDER IS GRAPH ATTENTION ENCODER!
+            embeddings, _ = self.embedder(self._init_embed(state.loc)) # EMBEDDER IS GRAPH ATTENTION ENCODER!
 
-        _log_p, pi = self._inner(input, embeddings) # INNER HAS TO BE THE DECODER
+        probs, pi, next_state = self._inner(state, embeddings) # INNER IS THE DECODER
 
-        cost, mask = self.problem.get_costs(input, pi)
+        cost = self.problem.get_step_cost(state, next_state)
+
+        return cost, next_state, probs
+
+        #cost, mask = self.problem.get_costs(input, pi)
         # Log likelyhood is calculated within the model since returning it per action does not work well with
         # DataParallel since sequences can be of different lengths
-        ll = self._calc_log_likelihood(_log_p, pi, mask)
-        if return_pi:
-            return cost, ll, pi
+        #ll = self._calc_log_likelihood(_log_p, pi, mask)
+        #if return_pi:
+        #    return cost, ll, pi
 
-        return cost, ll
+        #return cost, ll
 
     def beam_search(self, *args, **kwargs):
         return self.problem.beam_search(*args, **kwargs, model=self)
@@ -223,62 +231,24 @@ class AttentionModel(nn.Module):
         # TSP
         return self.init_embed(input)
 
-    def _inner(self, input, embeddings):
-
-        outputs = []
-        sequences = []
-
-        state = self.problem.make_state(input)
-        print("///")
-        #print(state)
-        print(type(state))
+    def _inner(self, state: StateTSP, embeddings):
 
         # Compute keys, values for the glimpse MHA calculation and keys for the logits calculation once, 
         # as they can be reused in every step (only the queries change)
         fixed = self._precompute(embeddings)
 
-        batch_size = state.ids.size(0)
+        # batch_size = input.ids.size(0)
 
-        # Perform decoding steps
-        i = 0
-        while not (self.shrink_size is None and state.all_finished()):
+        log_p, mask = self._get_log_p(fixed, state) # THIS IS WHERE THE MAGIC HAPPENS? it takes the precomputed fixed values and a state
 
-            if self.shrink_size is not None:
-                unfinished = torch.nonzero(state.get_finished() == 0)
-                if len(unfinished) == 0:
-                    break
-                unfinished = unfinished[:, 0]
-                # Check if we can shrink by at least shrink_size and if this leaves at least 16
-                # (otherwise batch norm will not work well and it is inefficient anyway)
-                if 16 <= len(unfinished) <= state.ids.size(0) - self.shrink_size:
-                    # Filter states
-                    state = state[unfinished]
-                    fixed = fixed[unfinished]
+        # Select the indices of the next nodes in the sequences, result (batch_size) long
+        selected = self._select_node(log_p.exp()[:, 0, :], mask[:, 0, :])  # Squeeze out steps dimension
 
-            log_p, mask = self._get_log_p(fixed, state) # THIS IS WHERE THE MAGIC HAPPENS? it takes the precomputed fixed values and a state
+        new_state = state.update(selected)
 
-            # Select the indices of the next nodes in the sequences, result (batch_size) long
-            selected = self._select_node(log_p.exp()[:, 0, :], mask[:, 0, :])  # Squeeze out steps dimension
+        return log_p[:, 0, :].exp(), selected, new_state
 
-            state = state.update(selected)
 
-            # Now make log_p, selected desired output size by 'unshrinking'
-            if self.shrink_size is not None and state.ids.size(0) < batch_size:
-                log_p_, selected_ = log_p, selected
-                log_p = log_p_.new_zeros(batch_size, *log_p_.size()[1:])
-                selected = selected_.new_zeros(batch_size)
-
-                log_p[state.ids[:, 0]] = log_p_
-                selected[state.ids[:, 0]] = selected_
-
-            # Collect output of step
-            outputs.append(log_p[:, 0, :])
-            sequences.append(selected)
-
-            i += 1
-
-        # Collected lists, return Tensor
-        return torch.stack(outputs, 1), torch.stack(sequences, 1)
 
     def sample_many(self, input, batch_rep=1, iter_rep=1):
         """

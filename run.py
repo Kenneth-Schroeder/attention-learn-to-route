@@ -10,11 +10,14 @@ from tensorboard_logger import Logger as TbLogger
 
 from nets.critic_network import CriticNetwork
 from options import get_options
-from train import train_epoch, validate, get_inner_model
+from train import train_epoch, train_epoch_sac, validate, get_inner_model
 from reinforce_baselines import NoBaseline, ExponentialBaseline, CriticBaseline, RolloutBaseline, WarmupBaseline
 from nets.attention_model import AttentionModel
 from nets.pointer_network import PointerNetwork, CriticNetworkLSTM
 from utils import torch_load_cpu, load_problem
+
+from tianshou.data import ReplayBuffer
+from tianshou.policy import SACPolicy
 
 
 def run(opts):
@@ -135,6 +138,59 @@ def run(opts):
     # Initialize learning rate scheduler, decay by lr_decay once per epoch!
     lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: opts.lr_decay ** epoch)
 
+
+    #:param torch.nn.Module actor: the actor network following the rules in
+    #    :class:`~tianshou.policy.BasePolicy`. (s -> logits)
+    #:param torch.optim.Optimizer actor_optim: the optimizer for actor network.
+    #:param torch.nn.Module critic1: the first critic network. (s, a -> Q(s, a))
+    #:param torch.optim.Optimizer critic1_optim: the optimizer for the first
+    #    critic network.
+    #:param torch.nn.Module critic2: the second critic network. (s, a -> Q(s, a))
+    #:param torch.optim.Optimizer critic2_optim: the optimizer for the second
+    #    critic network.
+    #:param float tau: param for soft update of the target network. Default to 0.005.
+    #:param float gamma: discount factor, in [0, 1]. Default to 0.99.
+    #:param (float, torch.Tensor, torch.optim.Optimizer) or float alpha: entropy
+    #    regularization coefficient. Default to 0.2.
+    #    If a tuple (target_entropy, log_alpha, alpha_optim) is provided, then
+    #    alpha is automatically tuned.
+    #:param bool reward_normalization: normalize the reward to Normal(0, 1).
+    #    Default to False.
+    #:param BaseNoise exploration_noise: add a noise to action for exploration.
+    #    Default to None. This is useful when solving hard-exploration problem.
+    #:param bool deterministic_eval: whether to use deterministic action (mean
+    #    of Gaussian policy) instead of stochastic action sampled by the policy.
+    #    Default to True.
+    #:param bool action_scaling: whether to map actions from range [-1, 1] to range
+    #    [action_spaces.low, action_spaces.high]. Default to True.
+    #:param str action_bound_method: method to bound action to range [-1, 1], can be
+    #    either "clip" (for simply clipping the action) or empty string for no bounding.
+    #    Default to "clip".
+    #:param Optional[gym.Space] action_space: env's action space, mandatory if you want
+    #    to use option "action_scaling" or "action_bound_method". Default to None.
+
+
+    #sac_model = SACPolicy(actor: torch.nn.Module, # tianshou.policy.BasePolicy (s -> logits)
+    #                      actor_optim: torch.optim.Optimizer,
+    #                      critic1: torch.nn.Module, # (s, a -> Q(s, a))
+    #                      critic1_optim: torch.optim.Optimizer,
+    #                      critic2: torch.nn.Module, # (s, a -> Q(s, a))
+    #                      critic2_optim: torch.optim.Optimizer,
+    #                      # tau: float = 0.005,
+    #                      gamma: 1.00, # default float = 0.99,
+    #                      # alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2, # entropy coefficient
+    #                      # reward_normalization: bool = False,
+    #                      # estimation_step: int = 1,
+    #                      # exploration_noise: Optional[BaseNoise] = None, # todo check if useful
+    #                      # deterministic_eval: bool = True,
+    #                      # **kwargs: Any,
+    #            )
+
+    sac_model = None # SACPolicy()
+
+
+
+
     # Start the actual training loop
     val_dataset = problem.make_dataset(
         size=opts.graph_size, num_samples=opts.val_size, filename=opts.val_dataset, distribution=opts.data_distribution)
@@ -154,9 +210,13 @@ def run(opts):
     if opts.eval_only:
         validate(model, val_dataset, opts)
     else:
+        buffer = ReplayBuffer(size=9)
+        
         for epoch in range(opts.epoch_start, opts.epoch_start + opts.n_epochs):
-            train_epoch(
+            train_epoch_sac(
                 model,
+                sac_model,
+                buffer,
                 optimizer,
                 baseline,
                 lr_scheduler,

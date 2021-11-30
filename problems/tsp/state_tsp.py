@@ -39,7 +39,7 @@ class StateTSP(NamedTuple):
         )
 
     @staticmethod
-    def initialize(loc, visited_dtype=torch.uint8):
+    def initialize(loc, visited_dtype=torch.uint8): # loc here means locations
 
         batch_size, n_loc, _ = loc.size()
         prev_a = torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device)
@@ -131,3 +131,8 @@ class StateTSP(NamedTuple):
 
     def construct_solutions(self, actions):
         return actions
+
+    def asdict(self):
+        d = self._asdict()
+        del d['cur_coord']
+        return d
