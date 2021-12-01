@@ -11,4 +11,4 @@ __pycache__/
 *.bak
 nohup.out
 sftp-config.json
-docker/libcudnn8_8.3.0.98-1+cuda11.5_amd64.deb
+**/*.deb
