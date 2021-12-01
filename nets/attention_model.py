@@ -13,6 +13,7 @@ from utils.functions import sample_many
 from problems.tsp.state_tsp import StateTSP
 from utils import move_to
 from tianshou.policy import BasePolicy
+from tianshou.data import Batch
 
 
 def set_decode_type(model, decode_type):
@@ -129,22 +130,29 @@ class AttentionModel(nn.Module):
     # return logits as tuple and second unused variable h
     # what I have: obs of a batch -> print(experience_batch.obs.shape) # 256, 1 tuple
     # what I used: one StateTSP with loc and some other variables in _inner and get_step_cost
-    
-    def forward(self, state: StateTSP): # batch: tianshou.data.batch.Batch) 
+    # lets just stick with one batch_state object... easy to handle... 
+    # NO i cant. since tianshou SAC expects to get batches ...
+
+    # so i will use an experience batch!? experience_batch.obs will contain the same data as a state object
+    def forward(self, batch): # batch: tianshou.data.batch.Batch) 
         """
-        :param input: (batch_size, graph_size, node_dim) input node features or dictionary with multiple tensors
+        :param batch.obs.loc: (batch_size, graph_size, node_dim) input node features or dictionary with multiple tensors
         """
+        state = batch
+        if type(batch) == Batch:
+            state = StateTSP.from_experience_batch(batch)
+
 
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
             embeddings, _ = checkpoint(self.embedder, self._init_embed(state.loc))
         else:
             embeddings, _ = self.embedder(self._init_embed(state.loc)) # EMBEDDER IS GRAPH ATTENTION ENCODER!
 
-        probs, pi, next_state = self._inner(state, embeddings) # INNER IS THE DECODER
+        probs = self._inner(state, embeddings) # INNER IS THE DECODER
 
-        cost = self.problem.get_step_cost(state, next_state)
+        # cost = self.problem.get_step_cost(obs, next_state)
 
-        return cost, next_state, probs
+        return probs # cost, next_state
 
         #cost, mask = self.problem.get_costs(input, pi)
         # Log likelyhood is calculated within the model since returning it per action does not work well with
@@ -239,14 +247,15 @@ class AttentionModel(nn.Module):
 
         # batch_size = input.ids.size(0)
 
-        log_p, mask = self._get_log_p(fixed, state) # THIS IS WHERE THE MAGIC HAPPENS? it takes the precomputed fixed values and a state
+        log_p = self._get_log_p(fixed, state) # THIS IS WHERE THE MAGIC HAPPENS? it takes the precomputed fixed values and a state
 
         # Select the indices of the next nodes in the sequences, result (batch_size) long
-        selected = self._select_node(log_p.exp()[:, 0, :], mask[:, 0, :])  # Squeeze out steps dimension
+        
+        # selected = self._select_node(log_p.exp()[:, 0, :], mask[:, 0, :])  # Squeeze out steps dimension
 
-        new_state = state.update(selected)
+        # new_state = state.update(selected)
 
-        return log_p[:, 0, :].exp(), selected, new_state
+        return log_p[:, 0, :].exp() # , selected #, new_state
 
 
 
@@ -305,7 +314,7 @@ class AttentionModel(nn.Module):
         )
         return AttentionModelFixed(embeddings, fixed_context, *fixed_attention_node_data)
 
-    def _get_log_p_topk(self, fixed, state, k=None, normalize=True):
+    def _get_log_p_topk(self, fixed, state: StateTSP, k=None, normalize=True):
         log_p, _ = self._get_log_p(fixed, state, normalize=normalize)
 
         # Return topk
@@ -318,7 +327,7 @@ class AttentionModel(nn.Module):
             torch.arange(log_p.size(-1), device=log_p.device, dtype=torch.int64).repeat(log_p.size(0), 1)[:, None, :]
         )
 
-    def _get_log_p(self, fixed, state, normalize=True):
+    def _get_log_p(self, fixed, state: StateTSP, normalize=True):
 
         # Compute first query = CONTEXT NODE embedding
         query = fixed.context_node_projected + \
@@ -338,7 +347,7 @@ class AttentionModel(nn.Module):
 
         assert not torch.isnan(log_p).any()
 
-        return log_p, mask
+        return log_p
 
     def _get_parallel_step_context(self, embeddings, state, from_depot=False):
         """
@@ -350,7 +359,7 @@ class AttentionModel(nn.Module):
         :return: (batch_size, num_steps, context_dim)
         """
 
-        current_node = state.get_current_node()
+        current_node = state.get_current_node() # prev_a
         batch_size, num_steps = current_node.size()
 
         if self.is_vrp:
@@ -401,6 +410,17 @@ class AttentionModel(nn.Module):
         else:  # TSP
         
             if num_steps == 1:  # We need to special case if we have only 1 step, may be the first or not
+                if state.i.size(dim=0) > 1:
+                    # need to create context for each sample individually
+                    placeholders = self.W_placeholder[None, None, :].view(1, -1).expand(batch_size, self.W_placeholder.size(-1))
+                    values = embeddings.gather(
+                                1,
+                                torch.cat((state.first_a, current_node), 1)[:, :, None].expand(batch_size, 2, embeddings.size(-1))
+                             ).view(batch_size, -1)
+                    contexts = torch.where(state.i == 0, placeholders, values).view(batch_size, 1, -1)
+                    return contexts
+
+
                 if state.i.item() == 0:
                     # First and only step, ignore prev_a (this is a placeholder)
                     return self.W_placeholder[None, None, :].expand(batch_size, 1, self.W_placeholder.size(-1))
@@ -409,20 +429,22 @@ class AttentionModel(nn.Module):
                         1,
                         torch.cat((state.first_a, current_node), 1)[:, :, None].expand(batch_size, 2, embeddings.size(-1))
                     ).view(batch_size, 1, -1)
+            
+
             # More than one step, assume always starting with first
-            embeddings_per_step = embeddings.gather(
-                1,
-                current_node[:, 1:, None].expand(batch_size, num_steps - 1, embeddings.size(-1))
-            )
-            return torch.cat((
-                # First step placeholder, cat in dim 1 (time steps)
-                self.W_placeholder[None, None, :].expand(batch_size, 1, self.W_placeholder.size(-1)),
-                # Second step, concatenate embedding of first with embedding of current/previous (in dim 2, context dim)
-                torch.cat((
-                    embeddings_per_step[:, 0:1, :].expand(batch_size, num_steps - 1, embeddings.size(-1)),
-                    embeddings_per_step
-                ), 2)
-            ), 1)
+            #embeddings_per_step = embeddings.gather(
+            #    1,
+            #    current_node[:, 1:, None].expand(batch_size, num_steps - 1, embeddings.size(-1))
+            #)
+            #return torch.cat((
+            #    # First step placeholder, cat in dim 1 (time steps)
+            #    self.W_placeholder[None, None, :].expand(batch_size, 1, self.W_placeholder.size(-1)),
+            #    # Second step, concatenate embedding of first with embedding of current/previous (in dim 2, context dim)
+            #    torch.cat((
+            #        embeddings_per_step[:, 0:1, :].expand(batch_size, num_steps - 1, embeddings.size(-1)),
+            #        embeddings_per_step
+            #    ), 2)
+            #), 1)
 
     def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask):
 

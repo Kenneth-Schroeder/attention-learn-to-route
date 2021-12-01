@@ -2,6 +2,7 @@ import torch
 from typing import NamedTuple
 from utils.boolmask import mask_long2bool, mask_long_scatter
 
+from tianshou.data import Batch
 
 class StateTSP(NamedTuple):
     # Fixed input
@@ -30,6 +31,8 @@ class StateTSP(NamedTuple):
     def __getitem__(self, key):
         assert torch.is_tensor(key) or isinstance(key, slice)  # If tensor, idx all tensors by this tensor:
         return self._replace(
+            loc=self.loc[key],
+            dist=self.dist[key],
             ids=self.ids[key],
             first_a=self.first_a[key],
             prev_a=self.prev_a[key],
@@ -61,6 +64,22 @@ class StateTSP(NamedTuple):
             lengths=torch.zeros(batch_size, 1, device=loc.device),
             cur_coord=None,
             i=torch.zeros(1, dtype=torch.int64, device=loc.device)  # Vector with length num_steps
+        )
+
+    @staticmethod
+    def from_experience_batch(batch: Batch):
+        print("creating state from batch")
+
+        return StateTSP(
+            loc=batch.obs.loc,
+            dist=batch.obs.dist,
+            ids=batch.obs.ids,
+            first_a=batch.obs.first_a,
+            prev_a=batch.obs.prev_a,
+            visited_=batch.obs.visited_,
+            lengths=batch.obs.lengths,
+            cur_coord=None, # TODO make sure model handles this correctly and does not use it anymore
+            i=batch.obs.i
         )
 
     def get_final_cost(self):

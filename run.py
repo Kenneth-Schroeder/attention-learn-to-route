@@ -210,7 +210,7 @@ def run(opts):
     if opts.eval_only:
         validate(model, val_dataset, opts)
     else:
-        buffer = ReplayBuffer(size=9)
+        buffer = ReplayBuffer(size=128)
         
         for epoch in range(opts.epoch_start, opts.epoch_start + opts.n_epochs):
             train_epoch_sac(

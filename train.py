@@ -11,8 +11,9 @@ from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
 from utils import move_to
 
-from tianshou.data import ReplayBuffer, Batch # tianshou.data.batch.
+from tianshou.data import ReplayBuffer, Batch
 from tianshou.policy import SACPolicy
+from problems.tsp.state_tsp import StateTSP
 
 
 def get_inner_model(model):
@@ -161,11 +162,18 @@ def train_epoch_sac(model, sac_model: SACPolicy, buffer: ReplayBuffer, optimizer
         discount = 1.0
         experience_batch_size = 256
         experience_batch = sample_buffer(buffer, experience_batch_size)
-        #print(type(experience_batch))
-        #print(experience_batch.obs.shape) # 256, 1 tuple
+        
+        #print(experience_batch.obs.loc)
+        #print(type(experience_batch.obs.loc))
+        #print(experience_batch.obs.loc.shape)
+        
+        #print(state.loc.shape)
+
+        # need a way to convert the experience_batch.obs to StateTSP...
         #print(experience_batch.obs[0])
 
         train_batch_sac(
+            model,
             sac_model,
             discount,
             epoch, # this should be fine
@@ -233,7 +241,12 @@ def collect_experience_sac(
         # Input to model will not be just a graph anymore, but rather an observation -> partially solved graph, i.e. state
         # try to input a tianshou batch here instead of a tsp state
         # first try to only use the state, without x, since x should be in state loc
-        cost, state, probs = model(prev_state)
+        probs = model(prev_state)
+        # cost, state, 
+        mask = prev_state.get_mask()
+        selected = model._select_node(probs, mask[:, 0, :])
+        state = prev_state.update(selected)
+        cost = problem.get_step_cost(prev_state, state)
 
         for i in range(x.shape[0]): # iterate over the whole batch and save each last step to replay buffer
             s = prev_state[torch.tensor(i)]
@@ -254,6 +267,7 @@ def collect_experience_sac(
 
 
 def train_batch_sac(
+        model,
         sac_model: SACPolicy,
         discount,
         epoch, # this should be fine
@@ -265,6 +279,7 @@ def train_batch_sac(
 ):
     # TODO
     print("training SAC")
+    model(experience_batch)
 
     # CANT I USE TIANSHOU SAC? - only need to define the models and optimizers
 
