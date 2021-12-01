@@ -13,11 +13,13 @@ from options import get_options
 from train import train_epoch, train_epoch_sac, validate, get_inner_model
 from reinforce_baselines import NoBaseline, ExponentialBaseline, CriticBaseline, RolloutBaseline, WarmupBaseline
 from nets.attention_model import AttentionModel
+
 from nets.pointer_network import PointerNetwork, CriticNetworkLSTM
 from utils import torch_load_cpu, load_problem
 
 from tianshou.data import ReplayBuffer
 from tianshou.policy import SACPolicy
+from nets.q_estimator import Q_Estimator
 
 
 def run(opts):
@@ -116,8 +118,8 @@ def run(opts):
     if 'baseline' in load_data:
         baseline.load_state_dict(load_data['baseline'])
 
-    # Initialize optimizer
-    optimizer = optim.Adam(
+    # Initialize optimizers
+    actor_optimizer = optim.Adam(
         [{'params': model.parameters(), 'lr': opts.lr_model}]
         + (
             [{'params': baseline.get_learnable_parameters(), 'lr': opts.lr_critic}]
@@ -127,16 +129,25 @@ def run(opts):
     )
 
     # Load optimizer state
-    if 'optimizer' in load_data:
-        optimizer.load_state_dict(load_data['optimizer'])
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                # if isinstance(v, torch.Tensor):
-                if torch.is_tensor(v):
-                    state[k] = v.to(opts.device)
+    #if 'optimizer' in load_data:
+    #    optimizer.load_state_dict(load_data['optimizer'])
+    #    for state in optimizer.state.values():
+    #        for k, v in state.items():
+    #            # if isinstance(v, torch.Tensor):
+    #            if torch.is_tensor(v):
+    #                state[k] = v.to(opts.device)
 
     # Initialize learning rate scheduler, decay by lr_decay once per epoch!
-    lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: opts.lr_decay ** epoch)
+    lr_scheduler = optim.lr_scheduler.LambdaLR(actor_optimizer, lambda epoch: opts.lr_decay ** epoch)
+
+
+
+    c1 = Q_Estimator(embedding_dim=16)
+    c2 = Q_Estimator(embedding_dim=16)
+
+    c1_optimizer = optim.Adam(c1.parameters(), lr=opts.lr_model) # TODO maybe use a different learning rate for critics
+    c2_optimizer = optim.Adam(c2.parameters(), lr=opts.lr_model)
+
 
 
     #:param torch.nn.Module actor: the actor network following the rules in
@@ -170,23 +181,23 @@ def run(opts):
     #    to use option "action_scaling" or "action_bound_method". Default to None.
 
 
-    #sac_model = SACPolicy(actor: torch.nn.Module, # tianshou.policy.BasePolicy (s -> logits)
-    #                      actor_optim: torch.optim.Optimizer,
-    #                      critic1: torch.nn.Module, # (s, a -> Q(s, a))
-    #                      critic1_optim: torch.optim.Optimizer,
-    #                      critic2: torch.nn.Module, # (s, a -> Q(s, a))
-    #                      critic2_optim: torch.optim.Optimizer,
-    #                      # tau: float = 0.005,
-    #                      gamma: 1.00, # default float = 0.99,
-    #                      # alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2, # entropy coefficient
-    #                      # reward_normalization: bool = False,
-    #                      # estimation_step: int = 1,
-    #                      # exploration_noise: Optional[BaseNoise] = None, # todo check if useful
-    #                      # deterministic_eval: bool = True,
-    #                      # **kwargs: Any,
-    #            )
 
-    sac_model = None # SACPolicy()
+
+    sac_model = SACPolicy(actor=model, # tianshou.policy.BasePolicy (s -> logits)
+                          actor_optim=actor_optimizer,
+                          critic1=c1, # (s, a -> Q(s, a))
+                          critic1_optim=c1_optimizer,
+                          critic2=c2, # (s, a -> Q(s, a))
+                          critic2_optim=c2_optimizer,
+                          # tau: float = 0.005,
+                          gamma=1.00, # default float = 0.99,
+                          # alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2, # entropy coefficient
+                          # reward_normalization: bool = False,
+                          # estimation_step: int = 1,
+                          # exploration_noise: Optional[BaseNoise] = None, # todo check if useful
+                          # deterministic_eval: bool = True,
+                          # **kwargs: Any,
+                )
 
 
 
@@ -217,7 +228,7 @@ def run(opts):
                 model,
                 sac_model,
                 buffer,
-                optimizer,
+                actor_optimizer,
                 baseline,
                 lr_scheduler,
                 epoch,
