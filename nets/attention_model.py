@@ -134,25 +134,29 @@ class AttentionModel(nn.Module):
     # NO i cant. since tianshou SAC expects to get batches ...
 
     # so i will use an experience batch!? experience_batch.obs will contain the same data as a state object
-    def forward(self, batch): # batch: tianshou.data.batch.Batch) 
+    def forward(self, batch: Batch, state = None, info = None): # batch: tianshou.data.batch.Batch) 
         """
         :param batch.obs.loc: (batch_size, graph_size, node_dim) input node features or dictionary with multiple tensors
         """
-        state = batch
-        if type(batch) == Batch:
-            state = StateTSP.from_experience_batch(batch)
+
+        _batch = batch
+        if type(_batch) == Batch:
+            _batch = StateTSP.from_obs_batch(batch)
 
 
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
-            embeddings, _ = checkpoint(self.embedder, self._init_embed(state.loc))
+            embeddings, _ = checkpoint(self.embedder, self._init_embed(_batch.loc))
         else:
-            embeddings, _ = self.embedder(self._init_embed(state.loc)) # EMBEDDER IS GRAPH ATTENTION ENCODER!
+            embeddings, _ = self.embedder(self._init_embed(_batch.loc)) # EMBEDDER IS GRAPH ATTENTION ENCODER!
 
-        probs = self._inner(state, embeddings) # INNER IS THE DECODER
+        logits = self._inner(_batch, embeddings) # INNER IS THE DECODER
+
+
+        # logits = tuple(map(tuple, logits)) # tianshou expected tuples
 
         # cost = self.problem.get_step_cost(obs, next_state)
 
-        return probs # cost, next_state
+        return logits, None # logits, h?
 
         #cost, mask = self.problem.get_costs(input, pi)
         # Log likelyhood is calculated within the model since returning it per action does not work well with
@@ -255,7 +259,7 @@ class AttentionModel(nn.Module):
 
         # new_state = state.update(selected)
 
-        return log_p[:, 0, :].exp() # , selected #, new_state
+        return log_p[:, 0, :] # , selected #, new_state
 
 
 
@@ -425,8 +429,9 @@ class AttentionModel(nn.Module):
                     # First and only step, ignore prev_a (this is a placeholder)
                     return self.W_placeholder[None, None, :].expand(batch_size, 1, self.W_placeholder.size(-1))
                 else:
+                    # for each state, gather the embeddings of first_a, current_node
                     return embeddings.gather(
-                        1,
+                        1, # gather along first dimension using indices specified next
                         torch.cat((state.first_a, current_node), 1)[:, :, None].expand(batch_size, 2, embeddings.size(-1))
                     ).view(batch_size, 1, -1)
             

@@ -14,6 +14,7 @@ from utils import move_to
 from tianshou.data import ReplayBuffer, Batch
 from tianshou.policy import SACPolicy
 from problems.tsp.state_tsp import StateTSP
+from torch.distributions import Categorical
 
 
 def get_inner_model(model):
@@ -132,7 +133,26 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
 
 # ReplayBuffer(size=9)
 # buf.add(obs=i, act=i, rew=i, done=i, obs_next=i + 1, info={})
-def train_epoch_sac(model, sac_model: SACPolicy, buffer: ReplayBuffer, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
+def train_epoch_sac(
+    model, 
+    actor, # tianshou.policy.BasePolicy (s -> logits)
+    actor_optim,
+    critic1, # (s, a -> Q(s, a))
+    critic1_optim,
+    critic2, # (s, a -> Q(s, a))
+    critic2_optim,
+    value_model,
+    v_optimizer,
+    #sac_model: SACPolicy, 
+    buffer: ReplayBuffer, 
+    optimizer, baseline, 
+    lr_scheduler, 
+    epoch, 
+    val_dataset, 
+    problem, 
+    tb_logger, 
+    opts
+):
     print("Start train epoch {}, lr={} for run {}".format(epoch, optimizer.param_groups[0]['lr'], opts.run_name))
     step = epoch * (opts.epoch_size // opts.batch_size)
     start_time = time.time()
@@ -147,6 +167,10 @@ def train_epoch_sac(model, sac_model: SACPolicy, buffer: ReplayBuffer, optimizer
 
     # Put model in train mode!
     model.train() # TODO check if this is necessary
+    critic1.train()
+    critic2.train()
+    value_model.train()
+    #sac_model.train()
     set_decode_type(model, "sampling")
 
     for batch_id, batch in enumerate(tqdm(training_dataloader, disable=opts.no_progress_bar)):
@@ -160,7 +184,7 @@ def train_epoch_sac(model, sac_model: SACPolicy, buffer: ReplayBuffer, optimizer
         )
 
         discount = 1.0
-        experience_batch_size = 256
+        experience_batch_size = 128
         experience_batch = sample_buffer(buffer, experience_batch_size)
         
         #print(experience_batch.obs.loc)
@@ -174,7 +198,15 @@ def train_epoch_sac(model, sac_model: SACPolicy, buffer: ReplayBuffer, optimizer
 
         train_batch_sac(
             model,
-            sac_model,
+            actor, # tianshou.policy.BasePolicy (s -> logits)
+            actor_optim,
+            critic1, # (s, a -> Q(s, a))
+            critic1_optim,
+            critic2, # (s, a -> Q(s, a))
+            critic2_optim,
+            value_model,
+            v_optimizer,
+            #sac_model,
             discount,
             epoch, # this should be fine
             batch_id, # this should be fine too
@@ -241,10 +273,11 @@ def collect_experience_sac(
         # Input to model will not be just a graph anymore, but rather an observation -> partially solved graph, i.e. state
         # try to input a tianshou batch here instead of a tsp state
         # first try to only use the state, without x, since x should be in state loc
-        probs = model(prev_state)
-        # cost, state, 
+        logits, _ = model(prev_state)
+        # logits = torch.tensor(logits, device=opts.device) # TODO hacky for now because exp only works with tensors but tianshou wants tuples
+        # logits.exp() gives probabilities
         mask = prev_state.get_mask()
-        selected = model._select_node(probs, mask[:, 0, :])
+        selected = model._select_node(logits.exp(), mask[:, 0, :])
         state = prev_state.update(selected)
         cost = problem.get_step_cost(prev_state, state)
 
@@ -268,7 +301,15 @@ def collect_experience_sac(
 
 def train_batch_sac(
         model,
-        sac_model: SACPolicy,
+        actor, # tianshou.policy.BasePolicy (s -> logits)
+        actor_optim,
+        critic1, # (s, a -> Q(s, a))
+        critic1_optim,
+        critic2, # (s, a -> Q(s, a))
+        critic2_optim,
+        value_model,
+        v_optimizer,
+        #sac_model: SACPolicy,
         discount,
         epoch, # this should be fine
         batch_id, # this should be fine too
@@ -279,7 +320,132 @@ def train_batch_sac(
 ):
     # TODO
     print("training SAC")
-    model(experience_batch)
+    #model(experience_batch)
+    # sac_model.learn(experience_batch) # somehow cant deal with actual batches
+    # somehow tianshou expects only single elements in forward
+    # also wants logits as tuple for some reason
+    # also creates a distribution using this tuple, which probably fails because logits tuple has wrong format
+    # (is trying to unpack in the Normal constructor parameters)
+
+    
+    logits, _ = actor(experience_batch.obs)
+    #print(logits.exp())
+    m = Categorical(logits.exp())
+    actions = m.sample()
+    #print(actions)
+    log_probs = m.log_prob(actions)
+    print(log_probs.shape)
+
+    # i dont really want to use actor for prediction here, right? this is not the idea of off-policy learning
+    # so how do i get the log_probs and how do i optimize the actor?
+    # for log_probs i have to use current policy acc to paper... but whyy?
+    # for optimizing policy, i should probably focus on optimizing the probs somehow...
+
+
+
+    #print(obs_result.log_prob.shape)
+    current_q1 = critic1(experience_batch.obs, experience_batch.act).flatten()
+    current_q2 = critic2(experience_batch.obs, experience_batch.act).flatten()
+    print(current_q1.shape)
+    print(current_q2.shape)
+    current_v = value_model(experience_batch.obs).flatten()
+    next_v = value_model(experience_batch.obs_next).flatten()
+    print(next_v.shape)
+    print(next_v.shape)
+    current_rewards = torch.tensor(experience_batch.rew).to(opts.device).flatten() # TODO dont use tianshou batch, so i dont have to move back and fourth between cpu and gpu
+    print(type(current_rewards))
+    print(current_rewards.shape)
+    alpha = 0.2
+
+    # this should not effect q_networks or actor_network
+    value_loss = torch.square(current_v - (torch.minimum(current_q1, current_q2) - alpha * log_probs)).mean() # logits = log_prob!?
+    # these should not effect value_network
+    q1_loss = torch.square(current_q1 - (current_rewards + next_v)).mean()
+    q2_loss = torch.square(current_q2 - (current_rewards + next_v)).mean()
+
+    # this should not effect q-networks
+    actor_loss = - torch.minimum(current_q1, current_q2) # TODO does this work?
+
+
+
+    # TODO prevent losses from interfering and updating wrong parameters -> use detach? i saw the trick somewhere ...
+
+
+
+
+
+
+
+
+
+
+
+    assert(1==0)
+    td = current_q - target_q
+    critic_loss = (td.pow(2) * weight).mean()
+    critic1_optim.zero_grad()
+    critic_loss.backward()
+    critic1_optim.step()
+    # return td, critic_loss
+
+
+
+
+
+    # critic 1&2
+    td1, critic1_loss = self._mse_optimizer(
+        batch, self.critic1, self.critic1_optim
+    )
+    td2, critic2_loss = self._mse_optimizer(
+        batch, self.critic2, self.critic2_optim
+    )
+    batch.weight = (td1 + td2) / 2.0  # prio-buffer
+
+    # actor
+    obs_result = self(batch)
+    a = obs_result.act
+    current_q1a = self.critic1(batch.obs, a).flatten()
+    current_q2a = self.critic2(batch.obs, a).flatten()
+    actor_loss = (
+        self._alpha * obs_result.log_prob.flatten() -
+        torch.min(current_q1a, current_q2a)
+    ).mean()
+    self.actor_optim.zero_grad()
+    actor_loss.backward()
+    self.actor_optim.step()
+
+    if self._is_auto_alpha:
+        log_prob = obs_result.log_prob.detach() + self._target_entropy
+        alpha_loss = -(self._log_alpha * log_prob).mean()
+        self._alpha_optim.zero_grad()
+        alpha_loss.backward()
+        self._alpha_optim.step()
+        self._alpha = self._log_alpha.detach().exp()
+
+    self.sync_weight()
+
+    result = {
+        "loss/actor": actor_loss.item(),
+        "loss/critic1": critic1_loss.item(),
+        "loss/critic2": critic2_loss.item(),
+    }
+    if self._is_auto_alpha:
+        result["loss/alpha"] = alpha_loss.item()
+        result["alpha"] = self._alpha.item()  # type: ignore
+
+    return result
+
+    
+
+
+
+
+
+
+
+    #result = sac_model.learn(experience_batch)
+    #print(result)
+
 
     # CANT I USE TIANSHOU SAC? - only need to define the models and optimizers
 
@@ -302,8 +468,6 @@ def train_batch_sac(
 
     # update moving average state-value
 
-
-    
 
 def train_batch(
         model,

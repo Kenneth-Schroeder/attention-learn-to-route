@@ -15,7 +15,7 @@ from utils import move_to
 from tianshou.policy import BasePolicy
 from tianshou.data import Batch
 
-class Q_Estimator(nn.Module):
+class V_Estimator(nn.Module):
 
     def __init__(self,
                  embedding_dim,
@@ -23,13 +23,13 @@ class Q_Estimator(nn.Module):
                  normalization='batch',
                  n_heads=8,
                  checkpoint_encoder=False):
-        super(Q_Estimator, self).__init__()
+        super(V_Estimator, self).__init__()
 
         self.embedding_dim = embedding_dim
         self.n_encode_layers = n_encode_layers
         self.n_heads = n_heads
         self.checkpoint_encoder = checkpoint_encoder
-        node_dim = 4 # x, y, in solution, next solution?
+        node_dim = 3 # x, y, in solution, next solution?
         self.init_embed = nn.Linear(node_dim, embedding_dim)
 
         self.graph_embed_to_value = nn.Linear(embedding_dim, 1)
@@ -43,18 +43,12 @@ class Q_Estimator(nn.Module):
 
         
 
-    def forward(self, batch_obs: Batch, batch_act: Batch): # batch: tianshou.data.batch.Batch)
+    def forward(self, batch_obs: Batch): # batch: tianshou.data.batch.Batch)
         loc = batch_obs.loc
-        batch_size, n_loc, _ = loc.shape
-
-        action_one_hot = torch.zeros(batch_size, 1, n_loc, dtype=torch.uint8, device=loc.device)
-        # see state_tsp.py ... visited_ = self.visited_.scatter(-1, prev_a[:, :, None], 1)
-        action_one_hot = action_one_hot.scatter(-1, batch_act[:, :, None], 1)
+        batch_size, _, _ = loc.shape
 
         visited = batch_obs.visited_.view(batch_size, -1, 1).to(device=loc.device)
-        action_one_hot = action_one_hot.view(batch_size, -1, 1)
-
-        my_input = torch.cat((loc, visited, action_one_hot), 2)
+        my_input = torch.cat((loc, visited), 2)
 
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
             embeddings, _ = checkpoint(self.embedder, self._init_embed(my_input))

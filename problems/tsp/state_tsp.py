@@ -82,6 +82,22 @@ class StateTSP(NamedTuple):
             i=batch.obs.i
         )
 
+    @staticmethod
+    def from_obs_batch(obs: Batch):
+        print("creating state from obs batch")
+
+        return StateTSP(
+            loc=obs.loc,
+            dist=obs.dist,
+            ids=obs.ids,
+            first_a=obs.first_a,
+            prev_a=obs.prev_a,
+            visited_=obs.visited_,
+            lengths=obs.lengths,
+            cur_coord=None, # TODO make sure model handles this correctly and does not use it anymore
+            i=obs.i
+        )
+
     def get_final_cost(self):
 
         assert self.all_finished()
