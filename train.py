@@ -15,16 +15,17 @@ from tianshou.data import ReplayBuffer, Batch
 from tianshou.policy import SACPolicy
 from problems.tsp.state_tsp import StateTSP
 from torch.distributions import Categorical
+from nets.random_actor import Random_Model
 
 
 def get_inner_model(model):
     return model.module if isinstance(model, DataParallel) else model
 
 
-def validate(model, dataset, opts):
+def validate(model, dataset, problem, opts):
     # Validate
     print('Validating...')
-    cost = rollout(model, dataset, opts)
+    cost = rollout(model, dataset, problem, opts)
     avg_cost = cost.mean()
     print('Validation overall avg_cost: {} +- {}'.format(
         avg_cost, torch.std(cost) / math.sqrt(len(cost))))
@@ -32,14 +33,18 @@ def validate(model, dataset, opts):
     return avg_cost
 
 
-def rollout(model, dataset, opts):
+def rollout(model, dataset, problem, opts):
     # Put in greedy evaluation mode!
     set_decode_type(model, "greedy")
     model.eval()
 
     def eval_model_bat(bat):
+        
+        _bat = move_to(bat, opts.device)
+        _bat = problem.make_state(_bat)
+        
         with torch.no_grad():
-            cost, _ = model(move_to(bat, opts.device))
+            cost = model.solve(_bat, problem, opts)
         return cost.data.cpu()
 
     return torch.cat([
@@ -118,7 +123,7 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
             os.path.join(opts.save_dir, 'epoch-{}.pt'.format(epoch))
         )
 
-    avg_reward = validate(model, val_dataset, opts)
+    avg_reward = validate(model, val_dataset, problem, opts)
 
     if not opts.no_tensorboard:
         tb_logger.log_value('val_avg_reward', avg_reward, step)
@@ -134,7 +139,6 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
 # ReplayBuffer(size=9)
 # buf.add(obs=i, act=i, rew=i, done=i, obs_next=i + 1, info={})
 def train_epoch_sac(
-    model, 
     actor, # tianshou.policy.BasePolicy (s -> logits)
     actor_optim,
     critic1, # (s, a -> Q(s, a))
@@ -143,7 +147,6 @@ def train_epoch_sac(
     critic2_optim,
     value_model,
     v_optimizer,
-    #sac_model: SACPolicy, 
     buffer: ReplayBuffer, 
     optimizer, baseline, 
     lr_scheduler, 
@@ -166,55 +169,58 @@ def train_epoch_sac(
     training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size, num_workers=1)
 
     # Put model in train mode!
-    model.train() # TODO check if this is necessary
+    actor.train() # TODO check if this is necessary
     critic1.train()
     critic2.train()
     value_model.train()
     #sac_model.train()
-    set_decode_type(model, "sampling")
+    set_decode_type(actor, "sampling")
 
     for batch_id, batch in enumerate(tqdm(training_dataloader, disable=opts.no_progress_bar)):
 
         collect_experience_sac(
-            model, # todo use random policy or sac model
+            actor, # todo use random policy or sac model
             buffer,
             problem,
             batch,
             opts
         )
 
-        discount = 1.0
-        experience_batch_size = 128
-        experience_batch = sample_buffer(buffer, experience_batch_size)
-        
-        #print(experience_batch.obs.loc)
-        #print(type(experience_batch.obs.loc))
-        #print(experience_batch.obs.loc.shape)
-        
-        #print(state.loc.shape)
+        # NOTES OF MISTAKES:
+        # re-sampled actions for value optimization, but need to take those from replay buffer
+        # didnt set model.train() or decode type "sampling" after validating
+        # replay buffer was too small and only contained experience of almost solved problems
+        # state values were mostly positive - entropy was weighted too high, making agent random, ...
+        #   ... also q/v-estimator didn't have much possibilities to create negative numbers
+        #       changed ReLU in MultiHeadAttentionLayer to leakyReLY
+        # changed number of encode_layers in q/v-estimators
+        # learning rate decay was never called - currently only for actor!
+        # different learning rates for q/v-estimators than for actor used now!
 
-        # need a way to convert the experience_batch.obs to StateTSP...
-        #print(experience_batch.obs[0])
+        for i in range(20):
+            discount = 1.0
+            experience_batch_size = 512
+            experience_batch = sample_buffer(buffer, experience_batch_size)
+        
+            train_batch_sac(
+                actor, # tianshou.policy.BasePolicy (s -> logits)
+                actor_optim,
+                critic1, # (s, a -> Q(s, a))
+                critic1_optim,
+                critic2, # (s, a -> Q(s, a))
+                critic2_optim,
+                value_model,
+                v_optimizer,
+                discount,
+                experience_batch,
+                opts
+            )
 
-        train_batch_sac(
-            model,
-            actor, # tianshou.policy.BasePolicy (s -> logits)
-            actor_optim,
-            critic1, # (s, a -> Q(s, a))
-            critic1_optim,
-            critic2, # (s, a -> Q(s, a))
-            critic2_optim,
-            value_model,
-            v_optimizer,
-            #sac_model,
-            discount,
-            epoch, # this should be fine
-            batch_id, # this should be fine too
-            step, # todo fix this value
-            experience_batch,
-            tb_logger,
-            opts
-        )
+        avg_reward = validate(actor, val_dataset, problem, opts)
+        #random_reward = validate(Random_Model(), val_dataset, problem, opts)
+        actor.train()
+        set_decode_type(actor, "sampling")
+        lr_scheduler.step() # decreases learning rate (only of the actor currently!!)
 
         step += 1
 
@@ -225,7 +231,7 @@ def train_epoch_sac(
         print('Saving model and state...')
         torch.save(
             {
-                'model': get_inner_model(model).state_dict(),
+                'model': get_inner_model(actor).state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'rng_state': torch.get_rng_state(),
                 'cuda_rng_state': torch.cuda.get_rng_state_all(),
@@ -234,22 +240,16 @@ def train_epoch_sac(
             os.path.join(opts.save_dir, 'epoch-{}.pt'.format(epoch))
         )
 
-    avg_reward = validate(model, val_dataset, opts)
+    avg_reward = validate(actor, val_dataset, problem, opts)
 
     if not opts.no_tensorboard:
         tb_logger.log_value('val_avg_reward', avg_reward, step)
 
-    baseline.epoch_callback(model, epoch)
+    baseline.epoch_callback(actor, epoch)
 
-    # lr_scheduler should be called at end of epoch
-    lr_scheduler.step()
 
 def sample_buffer(buffer: ReplayBuffer, count):
     batch, ids = buffer.sample(batch_size=count)
-
-    #print(batch)
-    #print(type(batch))
-    #print(batch.obs_next.i)
     return batch
 
 
@@ -260,8 +260,6 @@ def collect_experience_sac(
         input_batch,
         opts
 ):
-    print("collecting experience")
-    
     x = input_batch # TODO remove baseline stuff from batch - not needed anymore in sac - some baselines use batch['data'] here
     x = move_to(x, opts.device)
 
@@ -279,7 +277,7 @@ def collect_experience_sac(
         mask = prev_state.get_mask()
         selected = model._select_node(logits.exp(), mask[:, 0, :])
         state = prev_state.update(selected)
-        cost = problem.get_step_cost(prev_state, state)
+        cost = problem.get_step_cost(prev_state, state, opts)
 
         for i in range(x.shape[0]): # iterate over the whole batch and save each last step to replay buffer
             s = prev_state[torch.tensor(i)]
@@ -295,12 +293,10 @@ def collect_experience_sac(
             buffer.add(b)
 
         prev_state = state
-        print(j)
         j += 1
 
 
 def train_batch_sac(
-        model,
         actor, # tianshou.policy.BasePolicy (s -> logits)
         actor_optim,
         critic1, # (s, a -> Q(s, a))
@@ -309,164 +305,95 @@ def train_batch_sac(
         critic2_optim,
         value_model,
         v_optimizer,
-        #sac_model: SACPolicy,
         discount,
-        epoch, # this should be fine
-        batch_id, # this should be fine too
-        step, # todo fix this value
         experience_batch: Batch,
-        tb_logger,
         opts
 ):
-    # TODO
-    print("training SAC")
-    #model(experience_batch)
+    # tianshou issues
     # sac_model.learn(experience_batch) # somehow cant deal with actual batches
     # somehow tianshou expects only single elements in forward
     # also wants logits as tuple for some reason
     # also creates a distribution using this tuple, which probably fails because logits tuple has wrong format
     # (is trying to unpack in the Normal constructor parameters)
 
-    
     logits, _ = actor(experience_batch.obs)
-    #print(logits.exp())
-    m = Categorical(logits.exp())
-    actions = m.sample()
-    #print(actions)
-    log_probs = m.log_prob(actions)
-    print(log_probs.shape)
+    
+    current_q1 = critic1(experience_batch.obs)
+    current_q2 = critic2(experience_batch.obs)
 
-    # i dont really want to use actor for prediction here, right? this is not the idea of off-policy learning
-    # so how do i get the log_probs and how do i optimize the actor?
-    # for log_probs i have to use current policy acc to paper... but whyy?
-    # for optimizing policy, i should probably focus on optimizing the probs somehow...
-
-
-
-    #print(obs_result.log_prob.shape)
-    current_q1 = critic1(experience_batch.obs, experience_batch.act).flatten()
-    current_q2 = critic2(experience_batch.obs, experience_batch.act).flatten()
-    print(current_q1.shape)
-    print(current_q2.shape)
     current_v = value_model(experience_batch.obs).flatten()
     next_v = value_model(experience_batch.obs_next).flatten()
-    print(next_v.shape)
-    print(next_v.shape)
+    # print(next_v) # viel positiv :O - vermutlich wegen hohem entropy faktor - wird deshalb random?
+    # note: i currently can't backpropagate to value network parameters !!! how do i do this?
+    # wait i do ! i calculate difference in loss lol
+
+    # still viel POSITIV! - wie kann das sein? loss ist bei q-values und values gar nicht so schlecht ...
+
+
+
+
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+
+
+
+    current_act_q1 = current_q1.gather(1, experience_batch.act)
+    current_act_q2 = current_q2.gather(1, experience_batch.act)
+    act_logits = logits.gather(1, experience_batch.act)
+
+    act_log_probs = torch.log(act_logits.exp())
+
     current_rewards = torch.tensor(experience_batch.rew).to(opts.device).flatten() # TODO dont use tianshou batch, so i dont have to move back and fourth between cpu and gpu
-    print(type(current_rewards))
-    print(current_rewards.shape)
-    alpha = 0.2
+    alpha = 0.002 # entropy term becomes quite large wrt. q-values
 
-    # this should not effect q_networks or actor_network
-    value_loss = torch.square(current_v - (torch.minimum(current_q1, current_q2) - alpha * log_probs)).mean() # logits = log_prob!?
-    # these should not effect value_network
-    q1_loss = torch.square(current_q1 - (current_rewards + next_v)).mean()
-    q2_loss = torch.square(current_q2 - (current_rewards + next_v)).mean()
+    value_target = torch.minimum(current_act_q1, current_act_q2).detach() - alpha * act_log_probs.detach()
+    q_target = discount * (current_rewards + next_v.detach())
 
-    # this should not effect q-networks
-    actor_loss = - torch.minimum(current_q1, current_q2) # TODO does this work?
+    value_loss = torch.square(current_v - value_target).mean() # torch.square
+    q1_loss = torch.square(current_act_q1 - q_target).mean()
+    q2_loss = torch.square(current_act_q2 - q_target).mean()
 
+    # actor loss computation
+    softy = torch.nn.Softmax(dim=1)
+    soft_q1 = softy(current_q1.detach()) + 1e-6
+    soft_actor = softy(logits) + 1e-6 # prevent nan when calculating log below
+    p_div_q = torch.div(soft_actor, soft_q1)
+    log_p_div_q = torch.log(p_div_q)
+    p_log_p_div_q = torch.mul(soft_actor, log_p_div_q)
+    kl = torch.sum(p_log_p_div_q, dim=1)
+    actor_loss = torch.mean(kl)
 
+    # optimization
+    v_optimizer.zero_grad()
+    value_loss.backward()
+    v_optimizer.step()
 
-    # TODO prevent losses from interfering and updating wrong parameters -> use detach? i saw the trick somewhere ...
-
-
-
-
-
-
-
-
-
-
-
-    assert(1==0)
-    td = current_q - target_q
-    critic_loss = (td.pow(2) * weight).mean()
     critic1_optim.zero_grad()
-    critic_loss.backward()
+    q1_loss.backward()
     critic1_optim.step()
-    # return td, critic_loss
 
+    critic2_optim.zero_grad()
+    q2_loss.backward()
+    critic2_optim.step()
 
-
-
-
-    # critic 1&2
-    td1, critic1_loss = self._mse_optimizer(
-        batch, self.critic1, self.critic1_optim
-    )
-    td2, critic2_loss = self._mse_optimizer(
-        batch, self.critic2, self.critic2_optim
-    )
-    batch.weight = (td1 + td2) / 2.0  # prio-buffer
-
-    # actor
-    obs_result = self(batch)
-    a = obs_result.act
-    current_q1a = self.critic1(batch.obs, a).flatten()
-    current_q2a = self.critic2(batch.obs, a).flatten()
-    actor_loss = (
-        self._alpha * obs_result.log_prob.flatten() -
-        torch.min(current_q1a, current_q2a)
-    ).mean()
-    self.actor_optim.zero_grad()
+    actor_optim.zero_grad()
     actor_loss.backward()
-    self.actor_optim.step()
+    actor_optim.step()
 
-    if self._is_auto_alpha:
-        log_prob = obs_result.log_prob.detach() + self._target_entropy
-        alpha_loss = -(self._log_alpha * log_prob).mean()
-        self._alpha_optim.zero_grad()
-        alpha_loss.backward()
-        self._alpha_optim.step()
-        self._alpha = self._log_alpha.detach().exp()
-
-    self.sync_weight()
-
-    result = {
-        "loss/actor": actor_loss.item(),
-        "loss/critic1": critic1_loss.item(),
-        "loss/critic2": critic2_loss.item(),
-    }
-    if self._is_auto_alpha:
-        result["loss/alpha"] = alpha_loss.item()
-        result["alpha"] = self._alpha.item()  # type: ignore
-
-    return result
-
-    
-
-
-
-
-
-
-
-    #result = sac_model.learn(experience_batch)
-    #print(result)
-
-
-    # CANT I USE TIANSHOU SAC? - only need to define the models and optimizers
-
-    # update state-value estimator
-    # gradient of: V(s) * (V(s) - Q(a|s) + log p(a|s))
-    
-    #state_value_loss = v_model(experience_batch.obs) * 
-    #                  (v_model(experience_batch.obs) - 
-    #                   q_model(experience_batch.act, experience_batch.obs) + 
-    #                   log(policy_model(experience_batch.act, experience_batch.obs)))
-
-    # update q-value estimator (TODO use two q-value estimators)
-    # gradient of: Q(a|s) * (Q(a|s) - r(a|s) - gamma* V`(s+1))
-    #q_value_loss = q_model(experience_batch.act, experience_batch.obs) * 
-    #              (q_model(experience_batch.act, experience_batch.obs) - 
-    #               experience_batch.rew - discount * v_moving(experience_batch.obs_next))
-
-    # update policy estimator
-    # KL divergence or trick ....
-
-    # update moving average state-value
+    # q1_loss, q2_loss, value_loss, actor_loss
+    print(f"LOSSES - Actor: {actor_loss.item()}, Q1: {q1_loss.item()}, Q2: {q2_loss.item()}, V: {value_loss.item()}")
 
 
 def train_batch(

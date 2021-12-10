@@ -172,7 +172,7 @@ class MultiHeadAttentionLayer(nn.Sequential):
             SkipConnection(
                 nn.Sequential(
                     nn.Linear(embed_dim, feed_forward_hidden),
-                    nn.ReLU(),
+                    nn.LeakyReLU(negative_slope=0.2), # ReLU
                     nn.Linear(feed_forward_hidden, embed_dim)
                 ) if feed_forward_hidden > 0 else nn.Linear(embed_dim, embed_dim)
             ),

@@ -19,7 +19,7 @@ class V_Estimator(nn.Module):
 
     def __init__(self,
                  embedding_dim,
-                 n_encode_layers=2,
+                 n_encode_layers=4,
                  normalization='batch',
                  n_heads=8,
                  checkpoint_encoder=False):
@@ -32,7 +32,9 @@ class V_Estimator(nn.Module):
         node_dim = 3 # x, y, in solution, next solution?
         self.init_embed = nn.Linear(node_dim, embedding_dim)
 
-        self.graph_embed_to_value = nn.Linear(embedding_dim, 1)
+        self.fc1 = nn.Linear(embedding_dim, embedding_dim)
+        self.fc2 = nn.Linear(embedding_dim, embedding_dim)
+        self.fc_out = nn.Linear(embedding_dim, 1)
 
         self.embedder = GraphAttentionEncoder(
             n_heads=n_heads,
@@ -56,10 +58,13 @@ class V_Estimator(nn.Module):
             e = self._init_embed(my_input)
             embeddings, _ = self.embedder(e) # EMBEDDER IS GRAPH ATTENTION ENCODER!
 
-        graph_embed_mean = embeddings.mean(1)
+        graph_embed_mean = embeddings.sum(1) # mean?
         # graph_embed_sum = embeddings.sum(1) # TODO use more aggregations and adjust Linear layer.
 
-        return self.graph_embed_to_value(graph_embed_mean)
+        x = nn.functional.leaky_relu(self.fc1(graph_embed_mean), negative_slope=0.2)
+        x = nn.functional.leaky_relu(self.fc2(x), negative_slope=0.2)
+
+        return self.fc_out(x)
        
 
     def _init_embed(self, input):

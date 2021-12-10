@@ -147,9 +147,9 @@ def run(opts):
     c2 = Q_Estimator(embedding_dim=16).to(opts.device)
     v = V_Estimator(embedding_dim=16).to(opts.device)
 
-    c1_optimizer = optim.Adam(c1.parameters(), lr=opts.lr_model) # TODO maybe use a different learning rate for critics
-    c2_optimizer = optim.Adam(c2.parameters(), lr=opts.lr_model)
-    v_optimizer = optim.Adam(v.parameters(), lr=opts.lr_model)
+    c1_optimizer = optim.Adam(c1.parameters(), lr=opts.lr_critic) # TODO maybe use a different learning rate for critics
+    c2_optimizer = optim.Adam(c2.parameters(), lr=opts.lr_critic)
+    v_optimizer = optim.Adam(v.parameters(), lr=opts.lr_critic)
 
 
     #:param torch.nn.Module actor: the actor network following the rules in
@@ -223,11 +223,10 @@ def run(opts):
     if opts.eval_only:
         validate(model, val_dataset, opts)
     else:
-        buffer = ReplayBuffer(size=2048)
+        buffer = ReplayBuffer(size=opts.batch_size * opts.graph_size)
         
         for epoch in range(opts.epoch_start, opts.epoch_start + opts.n_epochs):
             train_epoch_sac(
-                model,
                 model, # tianshou.policy.BasePolicy (s -> logits)
                 actor_optimizer,
                 c1, # (s, a -> Q(s, a))

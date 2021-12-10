@@ -15,6 +15,8 @@ from utils import move_to
 from tianshou.policy import BasePolicy
 from tianshou.data import Batch
 
+import numpy as np
+
 
 def set_decode_type(model, decode_type):
     if isinstance(model, DataParallel):
@@ -126,6 +128,28 @@ class AttentionModel(nn.Module):
         if temp is not None:  # Do not change temperature if not provided
             self.temp = temp
 
+
+    def solve(self, batch_state: StateTSP, problem, opts):
+        
+        _new_state = batch_state
+        costs = torch.zeros(batch_state.loc.shape[0], device=opts.device) # np.full(batch_state.loc.shape[0], 0)
+
+        while not _new_state.all_finished():
+            _prev_state = _new_state
+            logits, _ = self(_prev_state)
+
+            mask = _prev_state.get_mask()
+            actions = self._select_node(logits.exp(), mask[:, 0, :])
+            _new_state = _prev_state.update(actions)
+            step_costs = problem.get_step_cost(_prev_state, _new_state, opts)
+            costs += step_costs.squeeze()
+
+            #if torch.mean(costs).item() > 9:
+            #    print(logits)
+            #    print(costs)
+
+        return costs
+
     # forward(batch: tianshou.data.batch.Batch, state: Optional[Union[dict, tianshou.data.batch.Batch, numpy.ndarray]] = None, **kwargs: Any)
     # return logits as tuple and second unused variable h
     # what I have: obs of a batch -> print(experience_batch.obs.shape) # 256, 1 tuple
@@ -134,7 +158,7 @@ class AttentionModel(nn.Module):
     # NO i cant. since tianshou SAC expects to get batches ...
 
     # so i will use an experience batch!? experience_batch.obs will contain the same data as a state object
-    def forward(self, batch: Batch, state = None, info = None): # batch: tianshou.data.batch.Batch) 
+    def forward(self, batch, state = None, info = None): # batch: tianshou.data.batch.Batch) 
         """
         :param batch.obs.loc: (batch_size, graph_size, node_dim) input node features or dictionary with multiple tensors
         """
@@ -143,7 +167,6 @@ class AttentionModel(nn.Module):
         if type(_batch) == Batch:
             _batch = StateTSP.from_obs_batch(batch)
 
-
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
             embeddings, _ = checkpoint(self.embedder, self._init_embed(_batch.loc))
         else:
@@ -151,6 +174,7 @@ class AttentionModel(nn.Module):
 
         logits = self._inner(_batch, embeddings) # INNER IS THE DECODER
 
+        # actions = self._select_node(logits.exp(), mask[:, 0, :])
 
         # logits = tuple(map(tuple, logits)) # tianshou expected tuples
 
@@ -278,7 +302,6 @@ class AttentionModel(nn.Module):
         )
 
     def _select_node(self, probs, mask):
-
         assert (probs == probs).all(), "Probs should not contain any nans"
 
         if self.decode_type == "greedy":

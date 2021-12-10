@@ -68,8 +68,6 @@ class StateTSP(NamedTuple):
 
     @staticmethod
     def from_experience_batch(batch: Batch):
-        print("creating state from batch")
-
         return StateTSP(
             loc=batch.obs.loc,
             dist=batch.obs.dist,
@@ -84,8 +82,6 @@ class StateTSP(NamedTuple):
 
     @staticmethod
     def from_obs_batch(obs: Batch):
-        print("creating state from obs batch")
-
         return StateTSP(
             loc=obs.loc,
             dist=obs.dist,
