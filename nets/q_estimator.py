@@ -29,7 +29,15 @@ class Q_Estimator(nn.Module):
         self.n_encode_layers = n_encode_layers
         self.n_heads = n_heads
         self.checkpoint_encoder = checkpoint_encoder
-        node_dim = 3 # x, y, in solution, next solution?
+        node_dim = 8 # x, y, visited - yes/no, first_a, prev_a - one hot, dist min, max, mean
+        # usually node dim is constant w.r.t number of nodes. now if i include distances to all other nodes, that O(n)
+        # just take multiple aggregations of the distances, like min, max and mean, which adds 3 dimensions - similar to GNN layers
+        # THATS ALL CUTE, BUT I DONT KNOW, WHICH NODE I AM CURRENTLY AT!!
+        # min werte sind useless, wenn der entsprechende neighbor already visited ist
+
+        # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - 
+        # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - 
+
         self.init_embed = nn.Linear(node_dim, embedding_dim)
 
         # self.graph_embed_to_value = nn.Linear(embedding_dim, 1)
@@ -50,6 +58,22 @@ class Q_Estimator(nn.Module):
         loc = batch_obs.loc
         batch_size, n_loc, _ = loc.shape
 
+        prev_a = batch_obs.prev_a
+        prev_a = torch.nn.functional.one_hot(prev_a, n_loc).view(batch_size, -1, 1)
+
+        first_a = batch_obs.first_a
+        first_a = torch.nn.functional.one_hot(first_a, n_loc).view(batch_size, -1, 1)
+        
+
+        # loc has shape: batch_size, #nodes, #coordinates
+        # dist_matrix should have shape: batch_size, #nodes, #nodes
+        distances = torch.cdist(loc, loc)
+        distances[distances==0] = torch.median(distances, dim=2).values.flatten()
+
+        min_distances = torch.min(distances, dim=2).values.view(batch_size, -1, 1)
+        max_distances = torch.max(distances, dim=2).values.view(batch_size, -1, 1)
+        mean_distances = torch.mean(distances, dim=2).view(batch_size, -1, 1)
+
         visited = batch_obs.visited_.view(batch_size, -1, 1).to(device=loc.device)
 
         # see state_tsp.py ... visited_ = self.visited_.scatter(-1, prev_a[:, :, None], 1)
@@ -58,7 +82,7 @@ class Q_Estimator(nn.Module):
         #action_one_hot = action_one_hot.view(batch_size, -1, 1)
         #my_input = torch.cat((loc, visited, action_one_hot), 2)
 
-        my_input = torch.cat((loc, visited), 2)
+        my_input = torch.cat((loc, visited, first_a, prev_a, min_distances, max_distances, mean_distances), 2) # , min_distances, max_distances, mean_distances
 
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
             embeddings, _ = checkpoint(self.embedder, self._init_embed(my_input))
@@ -72,10 +96,7 @@ class Q_Estimator(nn.Module):
         embeddings = nn.functional.leaky_relu(self.node_embed_fc1(embeddings), negative_slope=0.2)
         embeddings = nn.functional.leaky_relu(self.node_embed_fc2(embeddings), negative_slope=0.2)
         q_vectors = self.node_embed_to_value(embeddings).squeeze() # squeeze removes dimensions of size 1
-        q_vectors[visited.squeeze() > 0] = -math.inf # mask visited nodes
-
-
-
+        q_vectors[visited.squeeze() > 0] = math.inf # mask visited nodes
         # q_values = q_vectors.gather(1, batch_act) # select one action from each vector
         
         #q_vectors = graph_embed_mean

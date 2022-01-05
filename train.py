@@ -197,7 +197,7 @@ def train_epoch_sac(
         # learning rate decay was never called - currently only for actor!
         # different learning rates for q/v-estimators than for actor used now!
 
-        for i in range(20):
+        for i in range(40):
             discount = 1.0
             experience_batch_size = 512
             experience_batch = sample_buffer(buffer, experience_batch_size)
@@ -217,7 +217,13 @@ def train_epoch_sac(
             )
 
         avg_reward = validate(actor, val_dataset, problem, opts)
+        
         #random_reward = validate(Random_Model(), val_dataset, problem, opts)
+        #for bat in tqdm(DataLoader(val_dataset, batch_size=opts.eval_batch_size), disable=opts.no_progress_bar):
+        #    print(bat) 
+        #print(random_reward)
+        #assert(0==1)
+        
         actor.train()
         set_decode_type(actor, "sampling")
         lr_scheduler.step() # decreases learning rate (only of the actor currently!!)
@@ -318,36 +324,67 @@ def train_batch_sac(
 
     logits, _ = actor(experience_batch.obs)
     
-    current_q1 = critic1(experience_batch.obs)
-    current_q2 = critic2(experience_batch.obs)
+    current_q1 = -critic1(experience_batch.obs)
+    current_q2 = -critic2(experience_batch.obs)
 
-    current_v = value_model(experience_batch.obs).flatten()
-    next_v = value_model(experience_batch.obs_next).flatten()
+    # NEXT TODO
+    # my model should be able to deal with inputs of finished solutions/or finished solutions should never be put in!
+    # i need to recheck, how i calculate the "rewards" especially for final experiences -> need to add the path to start point
+    # maybe i can use the done bool from the replay buffer
+
+    # if i output logits, finished solutions should never make their way into my model!
+    # so i need to make sure, that either next_obs is never finished, or I circumvent using it here
+    # next_obs should be able to be finished solutions
+    # lets look at the done vector and see if it helps - should be helpful
+    # now i need to be able to select over the batch
+
+    # still lots of NANS in next_v?! CHECK THIS
+    # nans came from -inf * number
+    # i made sure that actor logits now are -inf for impossible actions as well (wasn't that the case already? wouldnt make sense otherwise)
+    # check above!
+    # next problem seems to be backpropagation in actor loss
+    # because we are trying to backprop for impossible actions as well ... (see actor loss computation below)
+
+    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
+
+
+    #print(experience_batch.done.shape)
+    masked_next_obs = StateTSP.from_obs_batch_masked(experience_batch.obs_next, ~experience_batch.done) # ~ is boolean inverse
+
+    # just take q-values times probability of them being chosen
+    logits_next, _ = actor(masked_next_obs)
+    softy = torch.nn.Softmax(dim=1)
+    soft_next = softy(logits_next)
+
+    expected_next_v1_actions = torch.nan_to_num(torch.mul(critic1(masked_next_obs), soft_next), nan=0.0)
+    expected_next_v2_actions = torch.nan_to_num(torch.mul(critic2(masked_next_obs), soft_next), nan=0.0)
+    expected_next_v1 = torch.sum(expected_next_v1_actions, dim=1)
+    expected_next_v2 = torch.sum(expected_next_v2_actions, dim=1)
+    #print(critic1(masked_next_obs))
+    #print(expected_next_v1)
+    
+    #next_v1[next_v1 == -math.inf] = 0
+    #next_v2[next_v2 == -math.inf] = 0 # set -inf values to 0, as they are final states and should not influence q-learning
+    next_v = torch.full(size=(experience_batch.obs.loc.shape[0], 1), fill_value=0, dtype=torch.float).squeeze().to(device=opts.device) # TODO why squeeze and 1 necessary?!
+    next_v[~experience_batch.done] = torch.minimum(expected_next_v1, expected_next_v2)
+    # print(next_v)
+
+    # current_v = value_model(experience_batch.obs).flatten()
+    # next_v = value_model(experience_batch.obs_next).flatten()
     # print(next_v) # viel positiv :O - vermutlich wegen hohem entropy faktor - wird deshalb random?
     # note: i currently can't backpropagate to value network parameters !!! how do i do this?
     # wait i do ! i calculate difference in loss lol
 
     # still viel POSITIV! - wie kann das sein? loss ist bei q-values und values gar nicht so schlecht ...
-
-
-
-
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-# LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-
-
+    # die konnten nicht so gut negative werte lernen
 
     current_act_q1 = current_q1.gather(1, experience_batch.act)
     current_act_q2 = current_q2.gather(1, experience_batch.act)
@@ -356,29 +393,46 @@ def train_batch_sac(
     act_log_probs = torch.log(act_logits.exp())
 
     current_rewards = torch.tensor(experience_batch.rew).to(opts.device).flatten() # TODO dont use tianshou batch, so i dont have to move back and fourth between cpu and gpu
-    alpha = 0.002 # entropy term becomes quite large wrt. q-values
+    alpha = 0.000 #0.002 # entropy term becomes quite large wrt. q-values
 
-    value_target = torch.minimum(current_act_q1, current_act_q2).detach() - alpha * act_log_probs.detach()
-    q_target = discount * (current_rewards + next_v.detach())
+    # value_target = torch.minimum(current_act_q1, current_act_q2).detach() - alpha * act_log_probs.detach()
+    q_target = current_rewards + discount * next_v.detach()
+    #print(current_act_q1)
 
-    value_loss = torch.square(current_v - value_target).mean() # torch.square
+    # value_loss = torch.square(current_v - value_target).mean() # torch.square
     q1_loss = torch.square(current_act_q1 - q_target).mean()
     q2_loss = torch.square(current_act_q2 - q_target).mean()
 
     # actor loss computation
-    softy = torch.nn.Softmax(dim=1)
     soft_q1 = softy(current_q1.detach()) + 1e-6
     soft_actor = softy(logits) + 1e-6 # prevent nan when calculating log below
-    p_div_q = torch.div(soft_actor, soft_q1)
+
+
+
+    # TODO CHECK IF DETACH HELPS HERE IN NEXT LINE WITH EXPERIENCE_BATCH
+    # in model, setting visited nodes logits to -inf is an inplace operation, which backpropagation doesn't like!
+    # why does it work in q_estimator? - we dont put them into softmax afterwards/or use detach...
+    # change in one logit effects all other logits when applying softmax!
+
+
+    # I am somewhat better than random with entropy factor 0, however, q-estimators seem to perform quite bad...
+    # maybe the q_estimators architecture is really bad for finding the distances... 
+    # -> I could just calculate the distances beforehand and input them to the estimator
+    # as one vector for the current action -> new dimension
+    # but why works their setup with reinforce? - they dont need to learn the q-values,
+    # they basically only need to learn the intuition/the policy
+
+
+    p_div_q = torch.div(soft_actor[~experience_batch.done], soft_q1[~experience_batch.done])
     log_p_div_q = torch.log(p_div_q)
-    p_log_p_div_q = torch.mul(soft_actor, log_p_div_q)
+    p_log_p_div_q = torch.mul(soft_actor[~experience_batch.done], log_p_div_q)
     kl = torch.sum(p_log_p_div_q, dim=1)
     actor_loss = torch.mean(kl)
 
     # optimization
-    v_optimizer.zero_grad()
-    value_loss.backward()
-    v_optimizer.step()
+    #v_optimizer.zero_grad()
+    #value_loss.backward()
+    #v_optimizer.step()
 
     critic1_optim.zero_grad()
     q1_loss.backward()
@@ -393,7 +447,7 @@ def train_batch_sac(
     actor_optim.step()
 
     # q1_loss, q2_loss, value_loss, actor_loss
-    print(f"LOSSES - Actor: {actor_loss.item()}, Q1: {q1_loss.item()}, Q2: {q2_loss.item()}, V: {value_loss.item()}")
+    print(f"LOSSES - Actor: {actor_loss.item()}, Q1: {q1_loss.item()}, Q2: {q2_loss.item()}")#, V: {value_loss.item()}
 
 
 def train_batch(

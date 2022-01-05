@@ -167,6 +167,13 @@ class AttentionModel(nn.Module):
         if type(_batch) == Batch:
             _batch = StateTSP.from_obs_batch(batch)
 
+        #not_done_mask = torch.sum(_batch.visited_.squeeze(), dim=1) < _batch.loc.shape[1]
+        #_batch = _batch[not_done_mask]
+
+        #logits = torch.full(_batch.loc.shape[:1], -math.inf)
+        #print(_batch.loc.shape)
+        #print(logits.shape)
+
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
             embeddings, _ = checkpoint(self.embedder, self._init_embed(_batch.loc))
         else:
@@ -174,12 +181,16 @@ class AttentionModel(nn.Module):
 
         logits = self._inner(_batch, embeddings) # INNER IS THE DECODER
 
+        batch_size, _, _ = _batch.loc.shape
+        visited = _batch.visited_.squeeze().to(device=_batch.loc.device)
+        
+        # logits[visited > 0] = -math.inf 
+
         # actions = self._select_node(logits.exp(), mask[:, 0, :])
 
         # logits = tuple(map(tuple, logits)) # tianshou expected tuples
 
         # cost = self.problem.get_step_cost(obs, next_state)
-
         return logits, None # logits, h?
 
         #cost, mask = self.problem.get_costs(input, pi)

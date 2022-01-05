@@ -80,6 +80,19 @@ class StateTSP(NamedTuple):
             i=batch.obs.i
         )
 
+    def from_obs_batch_masked(obs: Batch, mask):
+        return StateTSP(
+            loc=obs.loc[mask],
+            dist=obs.dist[mask],
+            ids=obs.ids[mask],
+            first_a=obs.first_a[mask],
+            prev_a=obs.prev_a[mask],
+            visited_=obs.visited_[mask],
+            lengths=obs.lengths[mask],
+            cur_coord=None, # TODO make sure model handles this correctly and does not use it anymore
+            i=obs.i[mask]
+        )
+
     @staticmethod
     def from_obs_batch(obs: Batch):
         return StateTSP(
@@ -131,6 +144,10 @@ class StateTSP(NamedTuple):
     def all_finished(self):
         # Exactly n steps
         return self.i.item() >= self.loc.size(-2)
+
+    def get_first_coord(self):
+        num_range = torch.arange(self.loc.shape[0])  # get numbers from 0..batch_size
+        return self.loc[num_range, self.first_a.squeeze(), :]
 
     def get_current_node(self):
         return self.prev_a
