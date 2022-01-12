@@ -136,9 +136,16 @@ class AttentionModel(nn.Module):
 
         _log_p, pi = self._inner(input, embeddings)
 
-        print(_log_p.shape)
-        print(pi.shape)
-        assert(1==0)
+        #print(_log_p.shape) # 512, 5, 5 # log probs = logits for each step
+        #print(pi.shape) # 512, 5 - all solutions, no backpropagation
+        #assert(1==0)
+
+        # with this i can create all the states and use this to get a state value
+        # I can also calculate all the intermediate rewards and discounted monte carlo reward
+        # with this i calculate advantages
+        # how do I get the old_probs?
+
+
 
         cost, mask = self.problem.get_costs(input, pi)
         # Log likelyhood is calculated within the model since returning it per action does not work well with

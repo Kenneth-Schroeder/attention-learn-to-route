@@ -10,6 +10,7 @@ from torch.nn import DataParallel
 from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
 from utils import move_to
+from problems.tsp.tsp_env import TSP_env
 
 
 def get_inner_model(model):
@@ -62,6 +63,38 @@ def clip_grad_norms(param_groups, max_norm=math.inf):
     ]
     grad_norms_clipped = [min(g_norm, max_norm) for g_norm in grad_norms] if max_norm > 0 else grad_norms
     return grad_norms, grad_norms_clipped
+
+def train(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
+    env = TSP_env(opts)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
