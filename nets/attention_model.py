@@ -136,6 +136,10 @@ class AttentionModel(nn.Module):
 
         _log_p, pi = self._inner(input, embeddings)
 
+        print(_log_p.shape)
+        print(pi.shape)
+        assert(1==0)
+
         cost, mask = self.problem.get_costs(input, pi)
         # Log likelyhood is calculated within the model since returning it per action does not work well with
         # DataParallel since sequences can be of different lengths
