@@ -16,7 +16,7 @@ class StateTSP(NamedTuple):
     first_a: torch.Tensor
     prev_a: torch.Tensor
     visited_: torch.Tensor  # Keeps track of nodes that have been visited
-    lengths: torch.Tensor
+    lengths: torch.Tensor # tour length so far
     cur_coord: torch.Tensor
     i: torch.Tensor  # Keeps track of step
 
@@ -26,6 +26,11 @@ class StateTSP(NamedTuple):
             return self.visited_
         else:
             return mask_long2bool(self.visited_, n=self.loc.size(-2))
+
+    @property
+    def finished(self):
+        return torch.sum(self.visited_, dim=2) >= self.visited_.shape[2]
+    
 
     def __getitem__(self, key):
         assert torch.is_tensor(key) or isinstance(key, slice)  # If tensor, idx all tensors by this tensor:
@@ -39,10 +44,27 @@ class StateTSP(NamedTuple):
         )
 
     @staticmethod
+    def from_state_buffer(state_buffer):
+        loc = torch.cat([state.loc for state in state_buffer]).detach()
+        return StateTSP(
+            loc=loc,
+            dist=torch.cat([state.dist for state in state_buffer]).detach(),
+            ids=torch.cat([state.ids for state in state_buffer]).detach(),  # Add steps dimension
+            first_a=torch.cat([state.first_a for state in state_buffer]).detach(),
+            prev_a=torch.cat([state.prev_a for state in state_buffer]).detach(),
+            # Keep visited with depot so we can scatter efficiently (if there is an action for depot)
+            visited_=torch.cat([state.visited_ for state in state_buffer]).detach(),
+            lengths=torch.cat([state.lengths for state in state_buffer]).detach(),
+            cur_coord=None,
+            i=torch.zeros(1, dtype=torch.int64, device=loc.device)  # Vector with length num_steps
+        )
+
+    @staticmethod
     def initialize(loc, visited_dtype=torch.uint8):
 
         batch_size, n_loc, _ = loc.size()
-        prev_a = torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device)
+        prev_a = torch.full(size=(batch_size, 1), fill_value=-1, dtype=torch.long, device=loc.device)
+        #prev_a = torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device)
         return StateTSP(
             loc=loc,
             dist=(loc[:, :, None, :] - loc[:, None, :, :]).norm(p=2, dim=-1),
@@ -64,10 +86,7 @@ class StateTSP(NamedTuple):
         )
 
     def get_final_cost(self):
-
         assert self.all_finished()
-        # assert self.visited_.
-
         return self.lengths + (self.loc[self.ids, self.first_a, :] - self.cur_coord).norm(p=2, dim=-1)
 
     def update(self, selected):
@@ -103,6 +122,10 @@ class StateTSP(NamedTuple):
 
     def get_current_node(self):
         return self.prev_a
+
+    def get_first_coords(self):
+        num_range = torch.arange(self.loc.shape[0])  # get numbers from 0..batch_size
+        return self.loc[num_range, self.first_a.squeeze(), :]
 
     def get_mask(self):
         return self.visited > 0  # Hacky way to return bool or uint8 depending on pytorch version

@@ -10,6 +10,8 @@ from torch.nn import DataParallel
 from utils.beam_search import CachedLookup
 from utils.functions import sample_many
 
+from torch.distributions.categorical import Categorical
+
 
 def set_decode_type(model, decode_type):
     if isinstance(model, DataParallel):
@@ -51,8 +53,7 @@ class AttentionModel(nn.Module):
                  mask_logits=True,
                  normalization='batch',
                  n_heads=8,
-                 checkpoint_encoder=False,
-                 shrink_size=None):
+                 checkpoint_encoder=False):
         super(AttentionModel, self).__init__()
 
         self.embedding_dim = embedding_dim
@@ -73,7 +74,6 @@ class AttentionModel(nn.Module):
         self.problem = problem
         self.n_heads = n_heads
         self.checkpoint_encoder = checkpoint_encoder
-        self.shrink_size = shrink_size
 
         # Problem specific context parameters (placeholder and step context dimension)
         if self.is_vrp or self.is_orienteering or self.is_pctsp:
@@ -121,40 +121,46 @@ class AttentionModel(nn.Module):
         if temp is not None:  # Do not change temperature if not provided
             self.temp = temp
 
-    def forward(self, input, return_pi=False):
+
+
+
+
+
+    def act(self, batch_state):
+        log_probs = self(batch_state) # comes in squeezed
+        dist = Categorical(logits=log_probs)
+        actions = dist.sample()
+        batch_state.update(actions)
+        return actions, log_probs.gather(1, actions.view(-1, 1)) # need to un-squeeze for gather
+
+    def evaluate(self, batch_states, actions):
+        log_probs = self(batch_states)
+        dist = Categorical(logits=log_probs)
+        return log_probs.gather(1, actions.view(-1, 1)).squeeze(), dist.entropy()
+
+
+    def forward(self, state_batch):
         """
-        :param input: (batch_size, graph_size, node_dim) input node features or dictionary with multiple tensors
-        :param return_pi: whether to return the output sequences, this is optional as it is not compatible with
-        using DataParallel as the results may be of different lengths on different GPUs
+        :param input: state_tsp with batch dimension
         :return:
         """
 
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
-            embeddings, _ = checkpoint(self.embedder, self._init_embed(input))
+            embeddings, _ = checkpoint(self.embedder, self._init_embed(state_batch.loc))
         else:
-            embeddings, _ = self.embedder(self._init_embed(input))
+            embeddings, _ = self.embedder(self._init_embed(state_batch.loc))
 
-        _log_p, pi = self._inner(input, embeddings)
 
-        #print(_log_p.shape) # 512, 5, 5 # log probs = logits for each step
-        #print(pi.shape) # 512, 5 - all solutions, no backpropagation
-        #assert(1==0)
+        logits, mask = self._inner(state_batch, embeddings)
+        log_probs = logits - logits.logsumexp(dim=-1, keepdim=True) # = normalized logits, inspired by torch.Categorical
 
-        # with this i can create all the states and use this to get a state value
-        # I can also calculate all the intermediate rewards and discounted monte carlo reward
-        # with this i calculate advantages
-        # how do I get the old_probs?
+        return log_probs.squeeze()
 
 
 
-        cost, mask = self.problem.get_costs(input, pi)
-        # Log likelyhood is calculated within the model since returning it per action does not work well with
-        # DataParallel since sequences can be of different lengths
-        ll = self._calc_log_likelihood(_log_p, pi, mask)
-        if return_pi:
-            return cost, ll, pi
 
-        return cost, ll
+
+
 
     def beam_search(self, *args, **kwargs):
         return self.problem.beam_search(*args, **kwargs, model=self)
@@ -167,14 +173,14 @@ class AttentionModel(nn.Module):
 
     def propose_expansions(self, beam, fixed, expand_size=None, normalize=False, max_calc_batch_size=4096):
         # First dim = batch_size * cur_beam_size
-        log_p_topk, ind_topk = compute_in_batches(
-            lambda b: self._get_log_p_topk(fixed[b.ids], b.state, k=expand_size, normalize=normalize),
+        logits_topk, ind_topk = compute_in_batches(
+            lambda b: self._get_logits_topk(fixed[b.ids], b.state, k=expand_size, normalize=normalize),
             max_calc_batch_size, beam, n=beam.size()
         )
 
-        assert log_p_topk.size(1) == 1, "Can only have single step"
-        # This will broadcast, calculate log_p (score) of expansions
-        score_expand = beam.score[:, None] + log_p_topk[:, 0, :]
+        assert logits_topk.size(1) == 1, "Can only have single step"
+        # This will broadcast, calculate logit (score) of expansions
+        score_expand = beam.score[:, None] + logits_topk[:, 0, :]
 
         # We flatten the action as we need to filter and this cannot be done in 2d
         flat_action = ind_topk.view(-1)
@@ -194,20 +200,6 @@ class AttentionModel(nn.Module):
         feas_ind = feas_ind_2d[:, 0]
 
         return flat_parent[feas_ind], flat_action[feas_ind], flat_score[feas_ind]
-
-    def _calc_log_likelihood(self, _log_p, a, mask):
-
-        # Get log_p corresponding to selected actions
-        log_p = _log_p.gather(2, a.unsqueeze(-1)).squeeze(-1)
-
-        # Optional: mask out actions irrelevant to objective so they do not get reinforced
-        if mask is not None:
-            log_p[mask] = 0
-
-        assert (log_p > -1000).data.all(), "Logprobs should not be -inf, check sampling procedure!"
-
-        # Calculate log_likelihood
-        return log_p.sum(1)
 
     def _init_embed(self, input):
 
@@ -232,58 +224,15 @@ class AttentionModel(nn.Module):
         # TSP
         return self.init_embed(input)
 
-    def _inner(self, input, embeddings):
-
-        outputs = []
-        sequences = []
-
-        state = self.problem.make_state(input)
-
+    def _inner(self, state, embeddings):
         # Compute keys, values for the glimpse and keys for the logits once as they can be reused in every step
         fixed = self._precompute(embeddings)
 
-        batch_size = state.ids.size(0)
+        # Perform single decoding step
+        if not state.all_finished():
+            logits, mask = self._get_logits(fixed, state)
 
-        # Perform decoding steps
-        i = 0
-        while not (self.shrink_size is None and state.all_finished()):
-
-            if self.shrink_size is not None:
-                unfinished = torch.nonzero(state.get_finished() == 0)
-                if len(unfinished) == 0:
-                    break
-                unfinished = unfinished[:, 0]
-                # Check if we can shrink by at least shrink_size and if this leaves at least 16
-                # (otherwise batch norm will not work well and it is inefficient anyway)
-                if 16 <= len(unfinished) <= state.ids.size(0) - self.shrink_size:
-                    # Filter states
-                    state = state[unfinished]
-                    fixed = fixed[unfinished]
-
-            log_p, mask = self._get_log_p(fixed, state)
-
-            # Select the indices of the next nodes in the sequences, result (batch_size) long
-            selected = self._select_node(log_p.exp()[:, 0, :], mask[:, 0, :])  # Squeeze out steps dimension
-
-            state = state.update(selected)
-
-            # Now make log_p, selected desired output size by 'unshrinking'
-            if self.shrink_size is not None and state.ids.size(0) < batch_size:
-                log_p_, selected_ = log_p, selected
-                log_p = log_p_.new_zeros(batch_size, *log_p_.size()[1:])
-                selected = selected_.new_zeros(batch_size)
-
-                log_p[state.ids[:, 0]] = log_p_
-                selected[state.ids[:, 0]] = selected_
-
-            # Collect output of step
-            outputs.append(log_p[:, 0, :])
-            sequences.append(selected)
-
-            i += 1
-
-        # Collected lists, return Tensor
-        return torch.stack(outputs, 1), torch.stack(sequences, 1)
+        return logits, mask
 
     def sample_many(self, input, batch_rep=1, iter_rep=1):
         """
@@ -340,20 +289,20 @@ class AttentionModel(nn.Module):
         )
         return AttentionModelFixed(embeddings, fixed_context, *fixed_attention_node_data)
 
-    def _get_log_p_topk(self, fixed, state, k=None, normalize=True):
-        log_p, _ = self._get_log_p(fixed, state, normalize=normalize)
+    def _get_logits_topk(self, fixed, state, k=None, normalize=True):
+        logits, _ = self._get_logits(fixed, state, normalize=normalize)
 
         # Return topk
-        if k is not None and k < log_p.size(-1):
-            return log_p.topk(k, -1)
+        if k is not None and k < logits.size(-1):
+            return logits.topk(k, -1)
 
         # Return all, note different from torch.topk this does not give error if less than k elements along dim
         return (
-            log_p,
-            torch.arange(log_p.size(-1), device=log_p.device, dtype=torch.int64).repeat(log_p.size(0), 1)[:, None, :]
+            logits,
+            torch.arange(logits.size(-1), device=logits.device, dtype=torch.int64).repeat(logits.size(0), 1)[:, None, :]
         )
 
-    def _get_log_p(self, fixed, state, normalize=True):
+    def _get_logits(self, fixed, state, normalize=True):
 
         # Compute query = context node embedding
         query = fixed.context_node_projected + \
@@ -365,15 +314,15 @@ class AttentionModel(nn.Module):
         # Compute the mask
         mask = state.get_mask()
 
-        # Compute logits (unnormalized log_p)
-        log_p, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
+        # Compute logits (unnormalized logits)
+        logits, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
 
         if normalize:
-            log_p = torch.log_softmax(log_p / self.temp, dim=-1)
+            logits = torch.log_softmax(logits / self.temp, dim=-1)
 
-        assert not torch.isnan(log_p).any()
+        assert not torch.isnan(logits).any()
 
-        return log_p, mask
+        return logits, mask
 
     def _get_parallel_step_context(self, embeddings, state, from_depot=False):
         """
@@ -437,7 +386,7 @@ class AttentionModel(nn.Module):
         
             if num_steps == 1:  # We need to special case if we have only 1 step, may be the first or not
                 if state.i.item() == 0:
-                    # First and only step, ignore prev_a (this is a placeholder)
+                    # First and only step, ignore first_a (this is a placeholder)
                     return self.W_placeholder[None, None, :].expand(batch_size, 1, self.W_placeholder.size(-1))
                 else:
                     return embeddings.gather(

@@ -11,11 +11,17 @@ class TSP(object):
     NAME = 'tsp'
 
     @staticmethod
-    def get_step_cost(state, next_state, opts):
+    def get_step_cost(state, next_state, device):
         # cost is the distance between locations, except for first action, where cost is 0
         if state.cur_coord is None:
-            return torch.zeros(next_state.cur_coord.shape[0], device=opts.device)
-        return (next_state.cur_coord - state.cur_coord).norm(p=2, dim=-1)
+            return torch.zeros(next_state.cur_coord.shape[:2], device=device)
+
+        cost = (next_state.cur_coord - state.cur_coord).norm(p=2, dim=-1)
+        # if step taken was last step, add cost of returning to origin node
+        mask = torch.sum(next_state.visited, dim=2) == next_state.loc.shape[1]
+        cost[mask] += (next_state.get_first_coords().view(-1, 1, 2) - next_state.cur_coord).norm(p=2, dim=-1)[mask]
+        #print(cost.shape)
+        return cost
 
     @staticmethod
     def get_costs(dataset, pi):

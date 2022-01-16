@@ -9,8 +9,9 @@ from torch.nn import DataParallel
 
 from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
-from utils import move_to
 from problems.tsp.tsp_env import TSP_env
+
+from ppo_agent import PPO_Agent
 
 
 def get_inner_model(model):
@@ -65,8 +66,52 @@ def clip_grad_norms(param_groups, max_norm=math.inf):
     return grad_norms, grad_norms_clipped
 
 def train(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
-    env = TSP_env(opts)
 
+    ppo_agent = PPO_Agent(model, optimizer, opts, discount=0.999, K_epochs=10, eps_clip=0.1)
+
+    env = TSP_env(opts)
+    max_training_timesteps = 100_000
+    max_ep_len = 200
+    time_step = 0
+
+    # training loop
+    while time_step <= max_training_timesteps:
+
+        state_batch = env.reset(opts)
+        #current_ep_reward = 0
+
+        for t in range(1, max_ep_len+1):
+
+            # select actions with policy
+            actions = ppo_agent.select_actions(state_batch)
+            state_batch, rewards, done, _ = env.step(actions, opts.device)
+
+            # saving reward and are_done
+            ppo_agent.buffer.rewards.append(rewards)
+            ppo_agent.buffer.are_done.append(done)
+
+            time_step +=1
+            #current_ep_reward += rewards
+
+            # break; if the episode is over
+            if done[0]:
+                ppo_agent.update()
+                break
+
+        #print_running_reward += current_ep_reward
+        #print_running_episodes += 1
+
+        #log_running_reward += current_ep_reward
+        #log_running_episodes += 1
+
+        #i_episode += 1
+
+
+        # NEXT STEPS
+        # make a agent class that contains the models, optimizers etc so that is doesnt float around everywhere like wtf
+        # make model work on single steps again
+        # check if costs calculation is still correct
+        # have fun
 
 
 
