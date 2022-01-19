@@ -131,9 +131,6 @@ def run(opts):
                 if torch.is_tensor(v):
                     state[k] = v.to(opts.device)
 
-    # Initialize learning rate scheduler, decay by lr_decay once per epoch!
-    lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: opts.lr_decay ** epoch)
-
     # Start the actual training loop
     val_dataset = problem.make_dataset(
         size=opts.graph_size, num_samples=opts.val_size, filename=opts.val_dataset, distribution=opts.data_distribution)
@@ -153,18 +150,11 @@ def run(opts):
     if opts.eval_only:
         validate(model, val_dataset, opts)
     else:
-        for epoch in range(opts.epoch_start, opts.epoch_start + opts.n_epochs):
-            train(
-                model,
-                optimizer,
-                baseline,
-                lr_scheduler,
-                epoch,
-                val_dataset,
-                problem,
-                tb_logger,
-                opts
-            )
+        train(
+            model,
+            optimizer,
+            opts
+        )
 
 
 if __name__ == "__main__":

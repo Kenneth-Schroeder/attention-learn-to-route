@@ -56,7 +56,7 @@ class StateTSP(NamedTuple):
             visited_=torch.cat([state.visited_ for state in state_buffer]).detach(),
             lengths=torch.cat([state.lengths for state in state_buffer]).detach(),
             cur_coord=None,
-            i=torch.zeros(1, dtype=torch.int64, device=loc.device)  # Vector with length num_steps
+            i=torch.cat([state.i for state in state_buffer]).detach()  # Vector with length num_steps
         )
 
     @staticmethod
@@ -82,7 +82,7 @@ class StateTSP(NamedTuple):
             ),
             lengths=torch.zeros(batch_size, 1, device=loc.device),
             cur_coord=None,
-            i=torch.zeros(1, dtype=torch.int64, device=loc.device)  # Vector with length num_steps
+            i=torch.zeros(batch_size, 1, dtype=torch.int64, device=loc.device)  # Vector with length num_steps
         )
 
     def get_final_cost(self):
@@ -105,7 +105,8 @@ class StateTSP(NamedTuple):
             lengths = self.lengths + (cur_coord - self.cur_coord).norm(p=2, dim=-1)  # (batch_dim, 1)
 
         # Update should only be called with just 1 parallel step, in which case we can check this way if we should update
-        first_a = prev_a if self.i.item() == 0 else self.first_a
+        first_a = self.first_a
+        first_a[self.i == 0] = prev_a[self.i == 0]
 
         if self.visited_.dtype == torch.uint8:
             # Add one dimension since we write a single value
@@ -118,7 +119,7 @@ class StateTSP(NamedTuple):
 
     def all_finished(self):
         # Exactly n steps
-        return self.i.item() >= self.loc.size(-2)
+        return torch.all(self.i >= self.loc.size(-2))
 
     def get_current_node(self):
         return self.prev_a

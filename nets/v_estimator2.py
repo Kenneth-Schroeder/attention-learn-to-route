@@ -10,6 +10,22 @@ from torch.nn import DataParallel
 from utils.beam_search import CachedLookup
 from utils.functions import sample_many
 
+from problems.tsp.state_tsp import StateTSP
+from utils import move_to
+
+import torch
+from torch import nn
+from torch.utils.checkpoint import checkpoint
+import math
+from typing import NamedTuple
+from utils.tensor_functions import compute_in_batches
+
+from nets.graph_encoder import GraphAttentionEncoder
+from torch.nn import DataParallel
+from utils.beam_search import CachedLookup
+from utils.functions import sample_many
+from utils import torch_load_cpu, load_problem
+
 from torch.distributions.categorical import Categorical
 
 
@@ -19,7 +35,7 @@ def set_decode_type(model, decode_type):
     model.set_decode_type(decode_type)
 
 
-class AttentionModelFixed(NamedTuple):
+class V_model_fixed(NamedTuple):
     """
     Context for AttentionModel decoder that is fixed during decoding so can be precomputed/cached
     This class allows for efficient indexing of multiple Tensors at once
@@ -32,7 +48,7 @@ class AttentionModelFixed(NamedTuple):
 
     def __getitem__(self, key):
         assert torch.is_tensor(key) or isinstance(key, slice)
-        return AttentionModelFixed(
+        return V_model_fixed(
             node_embeddings=self.node_embeddings[key],
             context_node_projected=self.context_node_projected[key],
             glimpse_key=self.glimpse_key[:, key],  # dim 0 are the heads
@@ -41,20 +57,20 @@ class AttentionModelFixed(NamedTuple):
         )
 
 
-class AttentionModel(nn.Module):
+class V_Estimator2(nn.Module):
 
     def __init__(self,
-                 embedding_dim,
-                 hidden_dim,
-                 problem,
+                 embedding_dim=128,
+                 hidden_dim=128,
+                 problem=load_problem('tsp'),
                  n_encode_layers=2,
                  tanh_clipping=10.,
-                 mask_inner=True,
-                 mask_logits=True,
+                 mask_inner=False,
+                 mask_logits=False,
                  normalization='batch',
                  n_heads=8,
                  checkpoint_encoder=False):
-        super(AttentionModel, self).__init__()
+        super(V_Estimator2, self).__init__()
 
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
@@ -115,6 +131,7 @@ class AttentionModel(nn.Module):
         assert embedding_dim % n_heads == 0
         # Note n_heads * val_dim == embedding_dim so input to project_out is embedding_dim
         self.project_out = nn.Linear(embedding_dim, embedding_dim, bias=False)
+        self.embedding_to_one = nn.Linear(embedding_dim, 1, bias=False)
 
     def set_decode_type(self, decode_type, temp=None):
         self.decode_type = decode_type
@@ -123,38 +140,21 @@ class AttentionModel(nn.Module):
 
 
 
-
-
-
-    def act(self, batch_state):
-        log_probs = self(batch_state) # comes in squeezed
-        dist = Categorical(logits=log_probs)
-        actions = dist.sample()
-        batch_state.update(actions)
-        return actions, log_probs.gather(1, actions.view(-1, 1)) # need to un-squeeze for gather
-
-    def evaluate(self, batch_states, actions):
-        log_probs = self(batch_states)
-        dist = Categorical(logits=log_probs)
-        return log_probs.gather(1, actions.view(-1, 1)).squeeze(), dist.entropy()
-
-
-    def forward(self, state_batch):
+    def forward(self, batch_states):
         """
         :param input: state_tsp with batch dimension
         :return:
         """
 
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
-            embeddings, _ = checkpoint(self.embedder, self._init_embed(state_batch.loc))
+            embeddings, _ = checkpoint(self.embedder, self._init_embed(batch_states.loc))
         else:
-            embeddings, _ = self.embedder(self._init_embed(state_batch.loc))
+            embeddings, _ = self.embedder(self._init_embed(batch_states.loc))
 
+        aggr, mask = self._inner(batch_states, embeddings)
 
-        logits, mask = self._inner(state_batch, embeddings)
-        log_probs = logits - logits.logsumexp(dim=-1, keepdim=True) # = normalized logits, inspired by torch.Categorical
-
-        return log_probs.squeeze()
+        values = self.embedding_to_one(aggr)
+        return values
 
 
 
@@ -170,36 +170,6 @@ class AttentionModel(nn.Module):
         # Use a CachedLookup such that if we repeatedly index this object with the same index we only need to do
         # the lookup once... this is the case if all elements in the batch have maximum batch size
         return CachedLookup(self._precompute(embeddings))
-
-    def propose_expansions(self, beam, fixed, expand_size=None, normalize=False, max_calc_batch_size=4096):
-        # First dim = batch_size * cur_beam_size
-        logits_topk, ind_topk = compute_in_batches(
-            lambda b: self._get_logits_topk(fixed[b.ids], b.state, k=expand_size, normalize=normalize),
-            max_calc_batch_size, beam, n=beam.size()
-        )
-
-        assert logits_topk.size(1) == 1, "Can only have single step"
-        # This will broadcast, calculate logit (score) of expansions
-        score_expand = beam.score[:, None] + logits_topk[:, 0, :]
-
-        # We flatten the action as we need to filter and this cannot be done in 2d
-        flat_action = ind_topk.view(-1)
-        flat_score = score_expand.view(-1)
-        flat_feas = flat_score > -1e10  # != -math.inf triggers
-
-        # Parent is row idx of ind_topk, can be found by enumerating elements and dividing by number of columns
-        flat_parent = torch.arange(flat_action.size(-1), out=flat_action.new()) // ind_topk.size(-1)
-
-        # Filter infeasible
-        feas_ind_2d = torch.nonzero(flat_feas)
-
-        if len(feas_ind_2d) == 0:
-            # Too bad, no feasible expansions at all :(
-            return None, None, None
-
-        feas_ind = feas_ind_2d[:, 0]
-
-        return flat_parent[feas_ind], flat_action[feas_ind], flat_score[feas_ind]
 
     def _init_embed(self, input):
 
@@ -230,9 +200,9 @@ class AttentionModel(nn.Module):
 
         # Perform single decoding step
         if not state.all_finished():
-            logits, mask = self._get_logits(fixed, state)
+            aggr, mask = self._get_aggr(fixed, state)
 
-        return logits, mask
+        return aggr, mask
 
     def sample_many(self, input, batch_rep=1, iter_rep=1):
         """
@@ -278,51 +248,34 @@ class AttentionModel(nn.Module):
         fixed_context = self.project_fixed_context(graph_embed)[:, None, :]
 
         # The projection of the node embeddings for the attention is calculated once up front
-        glimpse_key_fixed, glimpse_val_fixed, logit_key_fixed = \
+        glimpse_key_fixed, glimpse_val_fixed, aggr_key_fixed = \
             self.project_node_embeddings(embeddings[:, None, :, :]).chunk(3, dim=-1)
 
-        # No need to rearrange key for logit as there is a single head
         fixed_attention_node_data = (
             self._make_heads(glimpse_key_fixed, num_steps),
             self._make_heads(glimpse_val_fixed, num_steps),
-            logit_key_fixed.contiguous()
+            self._make_heads(aggr_key_fixed, num_steps)
         )
-        return AttentionModelFixed(embeddings, fixed_context, *fixed_attention_node_data)
+        return V_model_fixed(embeddings, fixed_context, *fixed_attention_node_data)
 
-    def _get_logits_topk(self, fixed, state, k=None, normalize=True):
-        logits, _ = self._get_logits(fixed, state, normalize=normalize)
-
-        # Return topk
-        if k is not None and k < logits.size(-1):
-            return logits.topk(k, -1)
-
-        # Return all, note different from torch.topk this does not give error if less than k elements along dim
-        return (
-            logits,
-            torch.arange(logits.size(-1), device=logits.device, dtype=torch.int64).repeat(logits.size(0), 1)[:, None, :]
-        )
-
-    def _get_logits(self, fixed, state, normalize=True):
+    def _get_aggr(self, fixed, state, normalize=True):
 
         # Compute query = context node embedding
         query = fixed.context_node_projected + \
                 self.project_step_context(self._get_parallel_step_context(fixed.node_embeddings, state))
 
         # Compute keys and values for the nodes
-        glimpse_K, glimpse_V, logit_K = self._get_attention_node_data(fixed, state)
+        glimpse_K, glimpse_V, aggr_K = self._get_attention_node_data(fixed, state)
 
         # Compute the mask
         mask = state.get_mask()
 
         # Compute logits (unnormalized logits)
-        logits, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
+        aggr, glimpse = self._one_to_many_aggr(query, glimpse_K, glimpse_V, aggr_K, mask)
 
-        if normalize:
-            logits = torch.log_softmax(logits / self.temp, dim=-1)
+        assert not torch.isnan(aggr).any()
 
-        assert not torch.isnan(logits).any()
-
-        return logits, mask
+        return aggr, mask
 
     def _get_parallel_step_context(self, embeddings, state, from_depot=False):
         """
@@ -424,16 +377,18 @@ class AttentionModel(nn.Module):
                 ), 2)
             ), 1)
 
-    def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask):
+    def _one_to_many_aggr(self, query, glimpse_K, glimpse_V, aggr_K, mask):
 
         batch_size, num_steps, embed_dim = query.size()
-        key_size = val_size = embed_dim // self.n_heads
+        key_size = val_size = embed_dim // self.n_heads # 16//8=2
 
         # Compute the glimpse, rearrange dimensions so the dimensions are (n_heads, batch_size, num_steps, 1, key_size)
         glimpse_Q = query.view(batch_size, num_steps, self.n_heads, 1, key_size).permute(2, 0, 1, 3, 4)
 
         # Batch matrix multiplication to compute compatibilities (n_heads, batch_size, num_steps, graph_size)
+        # compatibilities are the factors that are used for weighted average of glimpse_V's resulting in heads
         compatibility = torch.matmul(glimpse_Q, glimpse_K.transpose(-2, -1)) / math.sqrt(glimpse_Q.size(-1))
+
         if self.mask_inner:
             assert self.mask_logits, "Cannot mask inner without masking logits"
             compatibility[mask[None, :, :, None, :].expand_as(compatibility)] = -math.inf
@@ -447,18 +402,14 @@ class AttentionModel(nn.Module):
 
         # Now projecting the glimpse is not needed since this can be absorbed into project_out
         # final_Q = self.project_glimpse(glimpse)
-        final_Q = glimpse
+        final_Q = glimpse.view(self.n_heads, batch_size, num_steps, 1, key_size)
         # Batch matrix multiplication to compute logits (batch_size, num_steps, graph_size)
-        # logits = 'compatibility'
-        logits = torch.matmul(final_Q, logit_K.transpose(-2, -1)).squeeze(-2) / math.sqrt(final_Q.size(-1))
+        # logits = 'compatibility' !
 
-        # From the logits compute the probabilities by clipping, masking and softmax
-        if self.tanh_clipping > 0:
-            logits = torch.tanh(logits) * self.tanh_clipping
-        if self.mask_logits:
-            logits[mask] = -math.inf
+        compatibility2 = torch.matmul(final_Q, aggr_K.transpose(-2, -1)) / math.sqrt(final_Q.size(-1))
+        weighted_sum = torch.matmul(torch.softmax(compatibility2, dim=-1), glimpse_V)
 
-        return logits, glimpse.squeeze(-2)
+        return weighted_sum.permute(1, 2, 3, 0, 4).contiguous().view(batch_size, -1), glimpse.squeeze(-2)
 
     def _get_attention_node_data(self, fixed, state):
 
@@ -473,7 +424,7 @@ class AttentionModel(nn.Module):
             return (
                 fixed.glimpse_key + self._make_heads(glimpse_key_step),
                 fixed.glimpse_val + self._make_heads(glimpse_val_step),
-                fixed.logit_key + logit_key_step,
+                fixed.logit_key + self._make_heads(glimpse_key_step),
             )
 
         # TSP or VRP without split delivery

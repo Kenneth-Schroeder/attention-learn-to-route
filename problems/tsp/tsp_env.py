@@ -9,7 +9,7 @@ class TSP_env(gym.Env):
   """Custom Environment that follows gym interface"""
   metadata = {'render.modes': ['human']}
 
-  def __init__(self, opts):
+  def __init__(self, opts, num_samples=None):
     super(TSP_env, self).__init__()
     # Define action and observation space
     # They must be gym.spaces objects
@@ -17,7 +17,12 @@ class TSP_env(gym.Env):
     #self.action_space = spaces.Discrete(opts.graph_size)
     # Example for using image as input:
     #self.observation_space = spaces.Box(low=0, high=255, shape=(HEIGHT, WIDTH, N_CHANNELS), dtype=np.uint8)
-    self.dataset = TSP.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size, distribution=opts.data_distribution)
+    if num_samples is not None:
+      self.num_samples = num_samples
+    else:
+      self.num_samples = opts.epoch_size
+
+    self.dataset = TSP.make_dataset(size=opts.graph_size, num_samples=self.num_samples, distribution=opts.data_distribution)
     self.batch_state = StateTSP.initialize(move_to(torch.stack(self.dataset.data), opts.device))#TSP.make_state(self.dataset.data)
     #self.step(torch.zeros(len(self.dataset.data), dtype=torch.long), torch.device("cuda:0" if opts.use_cuda else "cpu"))
 
@@ -30,8 +35,8 @@ class TSP_env(gym.Env):
     return self.batch_state, rewards, done, info
 
   def reset(self, opts):
-    self.dataset = TSP.make_dataset(size=opts.graph_size, num_samples=opts.epoch_size, distribution=opts.data_distribution)
-    self.batch_state = StateTSP.initialize(move_to(torch.stack(self.dataset.data), opts.device))#TSP.make_state(self.dataset.data)
+    self.dataset = TSP.make_dataset(size=opts.graph_size, num_samples=self.num_samples, distribution=opts.data_distribution)
+    self.batch_state = StateTSP.initialize(move_to(torch.stack(self.dataset.data), opts.device))
     return self.batch_state # reward, done, info can't be included as there are none yet
 
   def render(self, mode='human'):

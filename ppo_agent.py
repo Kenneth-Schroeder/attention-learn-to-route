@@ -6,6 +6,7 @@ import torch
 import torch.optim as optim
 
 from nets.v_estimator import V_Estimator
+from nets.v_estimator2 import V_Estimator2
 
 class RolloutBuffer:
 	def __init__(self):
@@ -24,13 +25,16 @@ class RolloutBuffer:
 		del self.are_done[:]
 
 class PPO_Agent():
-	def __init__(self, model, optimizer, opts, discount, K_epochs, eps_clip):
+	def __init__(self, model, optimizer, opts, discount, K_epochs, eps_clip, entropy_factor):
 		self.policy = model
 		self.optimizer = optimizer
-		self.critic = V_Estimator(embedding_dim=16).to(opts.device)
+		self.critic = V_Estimator(embedding_dim=128).to(opts.device)
 		self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=opts.lr_critic)
 		self.device = opts.device
+		self.policy_scheduler = optim.lr_scheduler.ExponentialLR(self.optimizer, 0.99999)
+		self.critic_scheduler = optim.lr_scheduler.ExponentialLR(self.critic_optimizer, 0.99999)
 
+		self.entropy_factor = entropy_factor
 		self.discount = discount
 		self.eps_clip = eps_clip
 		self.K_epochs = K_epochs
@@ -43,32 +47,30 @@ class PPO_Agent():
 		self.MseLoss = torch.nn.MSELoss()
 
 	def select_actions(self, state_batch):
-
 		with torch.no_grad():
 			actions, action_logprobs = self.policy.act(state_batch)
 
-		self.buffer.states.append(state_batch)
-		self.buffer.actions.append(actions)
-		self.buffer.logprobs.append(action_logprobs)
+		return actions, action_logprobs
 
-		return actions
-
-	def update(self):
-
+	def validate(self, buffer):
 		# Monte Carlo estimate of returns
 		rewards = []
-		for reward, are_done in zip(reversed(self.buffer.rewards), reversed(self.buffer.are_done)):
+		for reward, are_done in zip(reversed(buffer.rewards), reversed(buffer.are_done)):
 			if are_done:
 				discounted_reward = torch.zeros(reward.shape, device=self.device)
 			discounted_reward = reward + (self.discount * discounted_reward)
 			rewards.insert(0, discounted_reward)
 
-		print(discounted_reward.mean())
+		return rewards, discounted_reward.mean()
+
+	def update(self):
+
+		# Monte Carlo estimate of returns
+		rewards, _ = self.validate(self.buffer)
 
 		# Normalizing the rewards
-
 		rewards = torch.cat(rewards).squeeze()
-		rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
+		#rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
 
 		# convert list to tensor
 		old_states = StateTSP.from_state_buffer(self.buffer.states)
@@ -82,7 +84,7 @@ class PPO_Agent():
 
 			# Evaluating old actions and values
 			logprobs, dist_entropy = self.policy.evaluate(old_states, old_actions)
-			state_values = self.critic(old_states)
+			state_values = -self.critic(old_states) # negation allows estimator to work with positive values
 
 			# Finding the ratio (pi_theta / pi_theta__old)
 			ratios = torch.exp(logprobs - old_logprobs.detach())
@@ -93,7 +95,7 @@ class PPO_Agent():
 			surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
 
 			# final loss of clipped objective PPO
-			loss = -torch.min(surr1, surr2).mean() - 0.01*dist_entropy.mean()
+			loss = -torch.min(surr1, surr2).mean() - self.entropy_factor*dist_entropy.mean()
 
 			# POSSIBLE PROBLEMS?!
 			# I am doing Monte Carlo but the gradients only flow through single steps
@@ -122,6 +124,10 @@ class PPO_Agent():
 			self.optimizer.zero_grad()
 			loss.mean().backward()
 			self.optimizer.step()
+
+		self.policy_scheduler.step()
+		self.critic_scheduler.step()
+		#print(f"Learning rates: {self.policy_scheduler.get_lr()}, {self.critic_scheduler.get_lr()}")
 
 		# Copy new weights into old policy
 		#self.policy_old.load_state_dict(self.policy.state_dict())

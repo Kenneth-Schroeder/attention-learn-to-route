@@ -97,8 +97,8 @@ class V_Estimator(nn.Module):
         embeddings = nn.functional.leaky_relu(self.node_embed_fc1(embeddings), negative_slope=0.2)
         embeddings = nn.functional.leaky_relu(self.node_embed_fc2(embeddings), negative_slope=0.2)
         node_values = self.node_embed_to_value(embeddings).squeeze() # squeeze removes dimensions of size 1
-        print(my_input)
-        print(torch.mean(node_values, dim=1))
+        #print(my_input)
+        #print(torch.mean(node_values, dim=1))
         return torch.mean(node_values, dim=1)
        
 

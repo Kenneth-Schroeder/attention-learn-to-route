@@ -11,7 +11,7 @@ from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
 from problems.tsp.tsp_env import TSP_env
 
-from ppo_agent import PPO_Agent
+from ppo_agent import PPO_Agent, RolloutBuffer
 
 
 def get_inner_model(model):
@@ -65,13 +65,14 @@ def clip_grad_norms(param_groups, max_norm=math.inf):
     grad_norms_clipped = [min(g_norm, max_norm) for g_norm in grad_norms] if max_norm > 0 else grad_norms
     return grad_norms, grad_norms_clipped
 
-def train(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
+def train(model, optimizer, opts):
 
-    ppo_agent = PPO_Agent(model, optimizer, opts, discount=0.999, K_epochs=10, eps_clip=0.1)
-
+    ppo_agent = PPO_Agent(model, optimizer, opts, discount=1.000, K_epochs=5, eps_clip=0.2, entropy_factor=0.005)
+    model.set_decode_type('sampling')
+    
     env = TSP_env(opts)
-    max_training_timesteps = 100_000
-    max_ep_len = 200
+    val_env = TSP_env(opts, num_samples=500)
+    max_training_timesteps = 1_000_000
     time_step = 0
 
     # training loop
@@ -80,13 +81,15 @@ def train(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem,
         state_batch = env.reset(opts)
         #current_ep_reward = 0
 
-        for t in range(1, max_ep_len+1):
+        while True:
 
             # select actions with policy
-            actions = ppo_agent.select_actions(state_batch)
-            state_batch, rewards, done, _ = env.step(actions, opts.device)
+            actions, log_probs = ppo_agent.select_actions(state_batch)
+            ppo_agent.buffer.states.append(state_batch)
+            ppo_agent.buffer.actions.append(actions)
+            ppo_agent.buffer.logprobs.append(log_probs)
 
-            # saving reward and are_done
+            state_batch, rewards, done, _ = env.step(actions, opts.device)
             ppo_agent.buffer.rewards.append(rewards)
             ppo_agent.buffer.are_done.append(done)
 
@@ -96,6 +99,19 @@ def train(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem,
             # break; if the episode is over
             if done[0]:
                 ppo_agent.update()
+
+                if time_step%5 == 0:
+                    val_batch = val_env.reset(opts)
+                    buffer = RolloutBuffer()
+                    while True:
+                        actions, _ = ppo_agent.select_actions(val_batch)
+                        val_batch, rewards, done, _ = val_env.step(actions, opts.device)
+                        buffer.rewards.append(rewards)
+                        buffer.are_done.append(done)
+                        if done[0]:
+                            break
+                    _, mean_reward = ppo_agent.validate(buffer)
+                    print(f"Step: {time_step}, Mean Reward: {mean_reward}")
                 break
 
         #print_running_reward += current_ep_reward
