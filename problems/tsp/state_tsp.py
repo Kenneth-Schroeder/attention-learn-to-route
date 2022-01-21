@@ -64,7 +64,6 @@ class StateTSP(NamedTuple):
 
         batch_size, n_loc, _ = loc.size()
         prev_a = torch.full(size=(batch_size, 1), fill_value=-1, dtype=torch.long, device=loc.device)
-        #prev_a = torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device)
         return StateTSP(
             loc=loc,
             dist=(loc[:, :, None, :] - loc[:, None, :, :]).norm(p=2, dim=-1),

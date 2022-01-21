@@ -4,40 +4,69 @@ from problems.tsp.problem_tsp import TSP
 from problems.tsp.state_tsp import StateTSP
 import torch
 from utils import move_to
+import numpy as np
 
 class TSP_env(gym.Env):
   """Custom Environment that follows gym interface"""
   metadata = {'render.modes': ['human']}
 
-  def __init__(self, opts, num_samples=None):
+  def __init__(self, opts):
     super(TSP_env, self).__init__()
-    # Define action and observation space
-    # They must be gym.spaces objects
-    # Example when using discrete actions:
-    #self.action_space = spaces.Discrete(opts.graph_size)
-    # Example for using image as input:
-    #self.observation_space = spaces.Box(low=0, high=255, shape=(HEIGHT, WIDTH, N_CHANNELS), dtype=np.uint8)
-    if num_samples is not None:
-      self.num_samples = num_samples
-    else:
-      self.num_samples = opts.epoch_size
 
-    self.dataset = TSP.make_dataset(size=opts.graph_size, num_samples=self.num_samples, distribution=opts.data_distribution)
-    self.batch_state = StateTSP.initialize(move_to(torch.stack(self.dataset.data), opts.device))#TSP.make_state(self.dataset.data)
-    #self.step(torch.zeros(len(self.dataset.data), dtype=torch.long), torch.device("cuda:0" if opts.use_cuda else "cpu"))
+    self.opts = opts
+    num_nodes = opts.graph_size
 
-  def step(self, action_batch, device):
+    obs_dict = {
+      'loc': spaces.Box(low=0, high=1, shape=(num_nodes, 2)),
+      'dist': spaces.Box(low=0, high=1.415, shape=(num_nodes, num_nodes)),
+      'first_a': spaces.Discrete(num_nodes),
+      'prev_a': spaces.Discrete(num_nodes),
+      'visited': spaces.MultiBinary(num_nodes),
+      'length': spaces.Box(low=0, high=np.inf, shape=(1,))
+    }
+
+    self.observation_space = spaces.Dict(obs_dict)
+    self.action_space = spaces.Discrete(num_nodes)
+
+    self.dataset = TSP.make_dataset(size=self.opts.graph_size, num_samples=1, distribution=self.opts.data_distribution)
+    self.batch_state = StateTSP.initialize(move_to(torch.stack(self.dataset.data), self.opts.device))
+
+  def get_obs(self):
+    return {
+      'loc': self.batch_state.loc.squeeze(),
+      'dist': self.batch_state.dist.squeeze(),
+      'first_a': self.batch_state.first_a.squeeze(),
+      'prev_a': self.batch_state.prev_a.squeeze(),
+      'visited': self.batch_state.visited_.squeeze(),
+      'length': self.batch_state.lengths.squeeze(),
+      'done': self.batch_state.finished.item()
+    }
+
+
+  def step(self, action):
     old_batch_state = self.batch_state
-    self.batch_state = self.batch_state.update(action_batch)
-    rewards = -TSP.get_step_cost(old_batch_state, self.batch_state, device)
-    done = self.batch_state.finished[0] # if one is done, all are done in this setting!
-    info = None
-    return self.batch_state, rewards, done, info
+    
+    masked_action = action
+    visited = self.batch_state.visited_.squeeze()
+    assert(not visited[masked_action].item()), "The node passed to the env's step function was already visited!"
+    if visited[masked_action].item():
+      non_zero_idxs = (visited == 0).nonzero()
+      masked_action = non_zero_idxs[0]
 
-  def reset(self, opts):
-    self.dataset = TSP.make_dataset(size=opts.graph_size, num_samples=self.num_samples, distribution=opts.data_distribution)
-    self.batch_state = StateTSP.initialize(move_to(torch.stack(self.dataset.data), opts.device))
-    return self.batch_state # reward, done, info can't be included as there are none yet
+    action_batch = torch.tensor([masked_action], device=self.opts.device)
+
+    self.batch_state = self.batch_state.update(action_batch)
+    reward = -TSP.get_step_cost(old_batch_state, self.batch_state, self.opts.device).item()
+    done = self.batch_state.finished.item()
+    info = {} # empty dict
+
+    return self.get_obs(), reward, done, info
+
+  def reset(self):
+    self.dataset = TSP.make_dataset(size=self.opts.graph_size, num_samples=1, distribution=self.opts.data_distribution)
+    self.batch_state = StateTSP.initialize(move_to(torch.stack(self.dataset.data), self.opts.device))
+
+    return self.get_obs() # reward, done, info can't be included as there are none yet
 
   def render(self, mode='human'):
     return

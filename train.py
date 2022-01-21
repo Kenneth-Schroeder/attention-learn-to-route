@@ -3,15 +3,16 @@ import time
 from tqdm import tqdm
 import torch
 import math
-
 from torch.utils.data import DataLoader
 from torch.nn import DataParallel
-
 from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
-from problems.tsp.tsp_env import TSP_env
-
 from ppo_agent import PPO_Agent, RolloutBuffer
+
+
+
+import tianshou as ts
+from problems.tsp.tsp_env import TSP_env
 
 
 def get_inner_model(model):
@@ -65,7 +66,7 @@ def clip_grad_norms(param_groups, max_norm=math.inf):
     grad_norms_clipped = [min(g_norm, max_norm) for g_norm in grad_norms] if max_norm > 0 else grad_norms
     return grad_norms, grad_norms_clipped
 
-def train(model, optimizer, opts):
+def train_epoch(model, optimizer, opts):
 
     ppo_agent = PPO_Agent(model, optimizer, opts, discount=1.000, K_epochs=5, eps_clip=0.2, entropy_factor=0.005)
     model.set_decode_type('sampling')
@@ -114,143 +115,35 @@ def train(model, optimizer, opts):
                     print(f"Step: {time_step}, Mean Reward: {mean_reward}")
                 break
 
-        #print_running_reward += current_ep_reward
-        #print_running_episodes += 1
-
-        #log_running_reward += current_ep_reward
-        #log_running_episodes += 1
-
-        #i_episode += 1
-
-
-        # NEXT STEPS
-        # make a agent class that contains the models, optimizers etc so that is doesnt float around everywhere like wtf
-        # make model work on single steps again
-        # check if costs calculation is still correct
-        # have fun
 
 
 
+def train(model, optimizer, opts):
+    num_train_envs, num_test_envs = 20, 32
+    train_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_train_envs)])
+    test_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_test_envs)])
+    env = TSP_env(opts)
+
+    gamma, n_step, target_freq = 1.00, 1, 100
+    policy = ts.policy.DQNPolicy(model, optimizer, gamma, n_step, target_update_freq=target_freq)
+
+    epoch, batch_size = 10, 64
+    step_per_epoch, step_per_collect = 1000, 10
+    train_num, test_num = 20, 100 # has to be larger than num_train_env or num_test_env
+    eps_train, eps_test = 0.1, 0.05
+    buffer_size = 100000
+    train_collector = ts.data.Collector(policy, train_envs, ts.data.VectorReplayBuffer(buffer_size, train_num), exploration_noise=False)
+    test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
+
+    result = ts.trainer.offpolicy_trainer(
+        policy, train_collector, test_collector, epoch, step_per_epoch, step_per_collect,
+        test_num, batch_size, update_per_step=1 / step_per_collect,
+        train_fn=lambda epoch, env_step: policy.set_eps(eps_train),
+        test_fn=lambda epoch, env_step: policy.set_eps(eps_test),
+        #stop_fn=lambda mean_rewards: mean_rewards >= env.spec.reward_threshold,
+        #logger=logger
+    )
+
+    assert(1==0)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
-    print("Start train epoch {}, lr={} for run {}".format(epoch, optimizer.param_groups[0]['lr'], opts.run_name))
-    step = epoch * (opts.epoch_size // opts.batch_size)
-    start_time = time.time()
-
-    if not opts.no_tensorboard:
-        tb_logger.log_value('learnrate_pg0', optimizer.param_groups[0]['lr'], step)
-
-    # Generate new training data for each epoch
-    training_dataset = baseline.wrap_dataset(problem.make_dataset(
-        size=opts.graph_size, num_samples=opts.epoch_size, distribution=opts.data_distribution))
-    training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size, num_workers=1)
-
-    # Put model in train mode!
-    model.train()
-    set_decode_type(model, "sampling")
-
-    for batch_id, batch in enumerate(tqdm(training_dataloader, disable=opts.no_progress_bar)):
-
-        train_batch(
-            model,
-            optimizer,
-            baseline,
-            epoch,
-            batch_id,
-            step,
-            batch,
-            tb_logger,
-            opts
-        )
-
-        step += 1
-
-    epoch_duration = time.time() - start_time
-    print("Finished epoch {}, took {} s".format(epoch, time.strftime('%H:%M:%S', time.gmtime(epoch_duration))))
-
-    if (opts.checkpoint_epochs != 0 and epoch % opts.checkpoint_epochs == 0) or epoch == opts.n_epochs - 1:
-        print('Saving model and state...')
-        torch.save(
-            {
-                'model': get_inner_model(model).state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'rng_state': torch.get_rng_state(),
-                'cuda_rng_state': torch.cuda.get_rng_state_all(),
-                'baseline': baseline.state_dict()
-            },
-            os.path.join(opts.save_dir, 'epoch-{}.pt'.format(epoch))
-        )
-
-    avg_reward = validate(model, val_dataset, opts)
-
-    if not opts.no_tensorboard:
-        tb_logger.log_value('val_avg_reward', avg_reward, step)
-
-    baseline.epoch_callback(model, epoch)
-
-    # lr_scheduler should be called at end of epoch
-    lr_scheduler.step()
-
-
-def train_batch(
-        model,
-        optimizer,
-        baseline,
-        epoch,
-        batch_id,
-        step,
-        batch,
-        tb_logger,
-        opts
-):
-    x, bl_val = baseline.unwrap_batch(batch)
-    x = move_to(x, opts.device)
-    bl_val = move_to(bl_val, opts.device) if bl_val is not None else None
-
-    # Evaluate model, get costs and log probabilities
-    cost, log_likelihood = model(x)
-
-    # Evaluate baseline, get baseline loss if any (only for critic)
-    bl_val, bl_loss = baseline.eval(x, cost) if bl_val is None else (bl_val, 0)
-
-    # Calculate loss
-    reinforce_loss = ((cost - bl_val) * log_likelihood).mean()
-    loss = reinforce_loss + bl_loss
-
-    # Perform backward pass and optimization step
-    optimizer.zero_grad()
-    loss.backward()
-    # Clip gradient norms and get (clipped) gradient norms for logging
-    grad_norms = clip_grad_norms(optimizer.param_groups, opts.max_grad_norm)
-    optimizer.step()
-
-    # Logging
-    if step % int(opts.log_step) == 0:
-        log_values(cost, grad_norms, epoch, batch_id, step,
-                   log_likelihood, reinforce_loss, bl_loss, tb_logger, opts)
