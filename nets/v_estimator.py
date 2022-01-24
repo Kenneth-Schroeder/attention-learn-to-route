@@ -52,21 +52,23 @@ class V_Estimator(nn.Module):
 
         
 
-    def forward(self, batch_states):
-        loc = batch_states.loc
+    def forward(self, obs, state=None, info=None):
+        loc = obs['loc']
         batch_size, n_loc, _ = loc.shape
 
-        prev_a = batch_states.prev_a
-        first_a = batch_states.first_a
+        prev_a = obs['prev_a'].view(batch_size, -1)
+        first_a = obs['first_a'].view(batch_size, -1)
         if prev_a[0] != -1:
             prev_a = torch.nn.functional.one_hot(prev_a, n_loc).view(batch_size, -1, 1)
             first_a = torch.nn.functional.one_hot(first_a, n_loc).view(batch_size, -1, 1)
         else:
             prev_a = torch.zeros((batch_size, n_loc, 1))
             first_a = torch.zeros((batch_size, n_loc, 1))
+        prev_a = prev_a.to(device=loc.device)
+        first_a = first_a.to(device=loc.device)
 
         
-        visited = batch_states.visited_.view(batch_size, -1, 1).to(device=loc.device)
+        visited = obs['visited'].view(batch_size, -1, 1).to(device=loc.device)
 
         # loc has shape: batch_size, #nodes, #coordinates
         # dist_matrix should have shape: batch_size, #nodes, #nodes
@@ -99,7 +101,7 @@ class V_Estimator(nn.Module):
         node_values = self.node_embed_to_value(embeddings).squeeze() # squeeze removes dimensions of size 1
         #print(my_input)
         #print(torch.mean(node_values, dim=1))
-        return torch.mean(node_values, dim=1)
+        return -torch.mean(node_values, dim=1)
        
 
     def _init_embed(self, input):

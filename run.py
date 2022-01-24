@@ -1,61 +1,24 @@
 #!/usr/bin/env python
 
-import os
-import json
 import pprint as pp
 
 import torch
 import torch.optim as optim
-from tensorboard_logger import Logger as TbLogger
 
-from nets.critic_network import CriticNetwork
 from options import get_options
-from train import train_epoch, train, validate, get_inner_model
-from reinforce_baselines import NoBaseline, ExponentialBaseline, CriticBaseline, RolloutBaseline, WarmupBaseline
 from nets.attention_model import AttentionModel
-from nets.pointer_network import PointerNetwork, CriticNetworkLSTM
-from utils import torch_load_cpu, load_problem
+from nets.v_estimator import V_Estimator
+from utils import load_problem
+
+import tianshou as ts
+from problems.tsp.tsp_env import TSP_env
 
 
-def run(opts):
-
-    # Pretty print the run args
-    pp.pprint(vars(opts))
-
-    # Set the random seed
-    torch.manual_seed(opts.seed)
-
-    # Optionally configure tensorboard
-    tb_logger = None
-    if not opts.no_tensorboard:
-        tb_logger = TbLogger(os.path.join(opts.log_dir, "{}_{}".format(opts.problem, opts.graph_size), opts.run_name))
-
-    os.makedirs(opts.save_dir)
-    # Save arguments so exact configuration can always be found
-    with open(os.path.join(opts.save_dir, "args.json"), 'w') as f:
-        json.dump(vars(opts), f, indent=True)
-
-    # Set the device
-    opts.device = torch.device("cuda:0" if opts.use_cuda else "cpu")
-
+def train(opts):
     # Figure out what's the problem
     problem = load_problem(opts.problem)
 
-    # Load data from load_path
-    load_data = {}
-    assert opts.load_path is None or opts.resume is None, "Only one of load path and resume can be given"
-    load_path = opts.load_path if opts.load_path is not None else opts.resume
-    if load_path is not None:
-        print('  [*] Loading data from {}'.format(load_path))
-        load_data = torch_load_cpu(load_path)
-
-    # Initialize model
-    model_class = {
-        'attention': AttentionModel,
-        'pointer': PointerNetwork
-    }.get(opts.model, None)
-    assert model_class is not None, "Unknown model: {}".format(model_class)
-    model = model_class(
+    actor = AttentionModel(
         opts.embedding_dim,
         opts.hidden_dim,
         problem,
@@ -67,94 +30,75 @@ def run(opts):
         checkpoint_encoder=opts.checkpoint_encoder
     ).to(opts.device)
 
-    if opts.use_cuda and torch.cuda.device_count() > 1:
-        model = torch.nn.DataParallel(model)
+    critic = V_Estimator(embedding_dim=16).to(opts.device)
 
-    # Overwrite model parameters by parameters to load
-    model_ = get_inner_model(model)
-    model_.load_state_dict({**model_.state_dict(), **load_data.get('model', {})})
+    #if opts.use_cuda and torch.cuda.device_count() > 1:
+    #    actor = torch.nn.DataParallel(actor)
 
-    # Initialize baseline
-    if opts.baseline == 'exponential':
-        baseline = ExponentialBaseline(opts.exp_beta)
-    elif opts.baseline == 'critic' or opts.baseline == 'critic_lstm':
-        assert problem.NAME == 'tsp', "Critic only supported for TSP"
-        baseline = CriticBaseline(
-            (
-                CriticNetworkLSTM(
-                    2,
-                    opts.embedding_dim,
-                    opts.hidden_dim,
-                    opts.n_encode_layers,
-                    opts.tanh_clipping
-                )
-                if opts.baseline == 'critic_lstm'
-                else
-                CriticNetwork(
-                    2,
-                    opts.embedding_dim,
-                    opts.hidden_dim,
-                    opts.n_encode_layers,
-                    opts.normalization
-                )
-            ).to(opts.device)
-        )
-    elif opts.baseline == 'rollout':
-        baseline = RolloutBaseline(model, problem, opts)
-    else:
-        assert opts.baseline is None, "Unknown baseline: {}".format(opts.baseline)
-        baseline = NoBaseline()
+    # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
+    optimizer = optim.Adam([
+        {'params': actor.parameters(), 'lr': 1e-3},
+        #{'params': critic.parameters(), 'lr': 1e-3} # opts.lr_model
+    ])
 
-    if opts.bl_warmup_epochs > 0:
-        baseline = WarmupBaseline(baseline, opts.bl_warmup_epochs, warmup_exp_beta=opts.exp_beta)
+    num_train_envs, num_test_envs = 20, 32
+    train_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_train_envs)])
+    test_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_test_envs)])
+    env = TSP_env(opts)
 
-    # Load baseline from data, make sure script is called with same type of baseline
-    if 'baseline' in load_data:
-        baseline.load_state_dict(load_data['baseline'])
+    gamma, n_step, target_freq = 1.00, 1, 100
 
-    # Initialize optimizer
-    optimizer = optim.Adam(
-        [{'params': model.parameters(), 'lr': opts.lr_model}]
-        + (
-            [{'params': baseline.get_learnable_parameters(), 'lr': opts.lr_critic}]
-            if len(baseline.get_learnable_parameters()) > 0
-            else []
-        )
+    distribution_type = torch.distributions.categorical.Categorical
+    #policy = ts.policy.PPOPolicy(actor=actor, critic=critic, optim=optimizer, dist_fn=distribution_type, discount_factor=gamma)
+    policy = ts.policy.DQNPolicy(actor, optimizer, gamma, n_step, target_update_freq=target_freq)
+
+    epoch, batch_size = 10, 64
+    
+    
+    eps_train, eps_test = 0.1, 0.05
+    buffer_size = 100000
+
+    num_train_episodes, num_test_episodes = 20, 100 # has to be larger than num_train_env or num_test_env
+    step_per_epoch, step_per_collect, repeat_per_collect = 1000, 10, 1
+
+    train_collector = ts.data.Collector(policy, train_envs, ts.data.VectorReplayBuffer(buffer_size, num_train_episodes), exploration_noise=False)
+    test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
+
+
+    #result = ts.trainer.onpolicy_trainer(
+    #    policy=policy,
+    #    train_collector=train_collector,
+    #    test_collector=test_collector,
+    #    max_epoch=epoch,
+    #    step_per_epoch=step_per_epoch,
+    #    repeat_per_collect=repeat_per_collect,
+    #    episode_per_test=num_test_episodes,
+    #    batch_size=batch_size,
+    #    step_per_collect=step_per_collect
+    #)
+
+    result = ts.trainer.offpolicy_trainer( # DOESN'T work with PPO, which makes sense
+        policy, train_collector, test_collector, epoch, step_per_epoch, step_per_collect,
+        num_test_episodes, batch_size, update_per_step=1 / step_per_collect,
+        train_fn=lambda epoch, env_step: policy.set_eps(eps_train),
+        test_fn=lambda epoch, env_step: policy.set_eps(eps_test),
+        #stop_fn=lambda mean_rewards: mean_rewards >= env.spec.reward_threshold,
+        #logger=logger
     )
 
-    # Load optimizer state
-    if 'optimizer' in load_data:
-        optimizer.load_state_dict(load_data['optimizer'])
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                # if isinstance(v, torch.Tensor):
-                if torch.is_tensor(v):
-                    state[k] = v.to(opts.device)
 
-    # Start the actual training loop
-    val_dataset = problem.make_dataset(
-        size=opts.graph_size, num_samples=opts.val_size, filename=opts.val_dataset, distribution=opts.data_distribution)
+def run(opts):
 
-    if opts.resume:
-        epoch_resume = int(os.path.splitext(os.path.split(opts.resume)[-1])[0].split("-")[1])
+    # Pretty print the run args
+    pp.pprint(vars(opts))
 
-        torch.set_rng_state(load_data['rng_state'])
-        if opts.use_cuda:
-            torch.cuda.set_rng_state_all(load_data['cuda_rng_state'])
-        # Set the random states
-        # Dumping of state was done before epoch callback, so do that now (model is loaded)
-        baseline.epoch_callback(model, epoch_resume)
-        print("Resuming after {}".format(epoch_resume))
-        opts.epoch_start = epoch_resume + 1
+    # Set the random seed
+    #torch.manual_seed(opts.seed)
 
-    if opts.eval_only:
-        validate(model, val_dataset, opts)
-    else:
-        train(
-            model,
-            optimizer,
-            opts
-        )
+    # Set the device
+    opts.device = torch.device("cuda:0" if opts.use_cuda else "cpu")
+
+    train(opts)
 
 
 if __name__ == "__main__":

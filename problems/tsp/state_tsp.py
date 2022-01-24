@@ -44,22 +44,6 @@ class StateTSP(NamedTuple):
         )
 
     @staticmethod
-    def from_state_buffer(state_buffer):
-        loc = torch.cat([state.loc for state in state_buffer]).detach()
-        return StateTSP(
-            loc=loc,
-            dist=torch.cat([state.dist for state in state_buffer]).detach(),
-            ids=torch.cat([state.ids for state in state_buffer]).detach(),  # Add steps dimension
-            first_a=torch.cat([state.first_a for state in state_buffer]).detach(),
-            prev_a=torch.cat([state.prev_a for state in state_buffer]).detach(),
-            # Keep visited with depot so we can scatter efficiently (if there is an action for depot)
-            visited_=torch.cat([state.visited_ for state in state_buffer]).detach(),
-            lengths=torch.cat([state.lengths for state in state_buffer]).detach(),
-            cur_coord=None,
-            i=torch.cat([state.i for state in state_buffer]).detach()  # Vector with length num_steps
-        )
-
-    @staticmethod
     def initialize(loc, visited_dtype=torch.uint8):
 
         batch_size, n_loc, _ = loc.size()

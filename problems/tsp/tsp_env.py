@@ -38,8 +38,7 @@ class TSP_env(gym.Env):
       'first_a': self.batch_state.first_a.squeeze(),
       'prev_a': self.batch_state.prev_a.squeeze(),
       'visited': self.batch_state.visited_.squeeze(),
-      'length': self.batch_state.lengths.squeeze(),
-      'done': self.batch_state.finished.item()
+      'length': self.batch_state.lengths.squeeze()
     }
 
 

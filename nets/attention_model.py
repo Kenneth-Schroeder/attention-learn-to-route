@@ -139,7 +139,7 @@ class AttentionModel(nn.Module):
         return log_probs.gather(1, actions.view(-1, 1)).squeeze(), dist.entropy()
 
 
-    def forward(self, obs, state, info):
+    def forward(self, obs, state=None, info=None):
         """
         :param input: state_tsp with batch dimension
         :return:
@@ -156,11 +156,13 @@ class AttentionModel(nn.Module):
 
 
         logits, mask = self._inner(obs, embeddings)
-        log_probs = logits
+        #log_probs = logits
+        
         #log_probs = logits - logits.logsumexp(dim=-1, keepdim=True) # = normalized logits, inspired by torch.Categorical
+        
+        #probs = nn.functional.softmax(logits.squeeze(), dim=1)
 
-        return log_probs.squeeze(), state # next hidden state
-
+        return logits.squeeze(), state # next hidden state
 
 
 
@@ -337,7 +339,7 @@ class AttentionModel(nn.Module):
         """
 
         batch_size = obs['loc'].shape[0]
-        current_node = obs.prev_a.view(batch_size, -1)
+        current_node = obs['prev_a'].view(batch_size, -1)
         batch_size, num_steps = current_node.size()
 
         if self.is_vrp:
