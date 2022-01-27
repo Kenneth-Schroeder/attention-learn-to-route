@@ -33,9 +33,6 @@ class V_Estimator(nn.Module):
         # THATS ALL CUTE, BUT I DONT KNOW, WHICH NODE I AM CURRENTLY AT!!
         # min werte sind useless, wenn der entsprechende neighbor already visited ist
 
-        # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - 
-        # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - 
-
         self.init_embed = nn.Linear(node_dim, embedding_dim)
 
         # self.graph_embed_to_value = nn.Linear(embedding_dim, 1)
@@ -56,18 +53,24 @@ class V_Estimator(nn.Module):
         loc = obs['loc']
         batch_size, n_loc, _ = loc.shape
 
-        prev_a = obs['prev_a'].view(batch_size, -1)
-        first_a = obs['first_a'].view(batch_size, -1)
-        if prev_a[0] != -1:
-            prev_a = torch.nn.functional.one_hot(prev_a, n_loc).view(batch_size, -1, 1)
-            first_a = torch.nn.functional.one_hot(first_a, n_loc).view(batch_size, -1, 1)
-        else:
-            prev_a = torch.zeros((batch_size, n_loc, 1))
-            first_a = torch.zeros((batch_size, n_loc, 1))
+        prev_a_idx = obs['prev_a'].view(batch_size, -1)
+        first_a_idx = obs['first_a'].view(batch_size, -1)
+
+        prev_a = torch.zeros((batch_size, n_loc, 1), dtype=torch.float)
+        first_a = torch.zeros((batch_size, n_loc, 1), dtype=torch.float)
+
+        mask = prev_a_idx.squeeze()!=-1
+        replacement_prev_a = torch.nn.functional.one_hot(prev_a_idx[mask], n_loc).view(-1, n_loc, 1).type(torch.float)
+        replacement_first_a = torch.nn.functional.one_hot(first_a_idx[mask], n_loc).view(-1, n_loc, 1).type(torch.float)
+
         prev_a = prev_a.to(device=loc.device)
         first_a = first_a.to(device=loc.device)
+        replacement_prev_a = replacement_prev_a.to(device=loc.device)
+        replacement_first_a = replacement_first_a.to(device=loc.device)
 
-        
+        prev_a[mask] = replacement_prev_a
+        first_a[mask] = replacement_first_a
+
         visited = obs['visited'].view(batch_size, -1, 1).to(device=loc.device)
 
         # loc has shape: batch_size, #nodes, #coordinates
@@ -99,8 +102,7 @@ class V_Estimator(nn.Module):
         embeddings = nn.functional.leaky_relu(self.node_embed_fc1(embeddings), negative_slope=0.2)
         embeddings = nn.functional.leaky_relu(self.node_embed_fc2(embeddings), negative_slope=0.2)
         node_values = self.node_embed_to_value(embeddings).squeeze() # squeeze removes dimensions of size 1
-        #print(my_input)
-        #print(torch.mean(node_values, dim=1))
+
         return -torch.mean(node_values, dim=1)
        
 

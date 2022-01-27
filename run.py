@@ -12,16 +12,24 @@ from utils import load_problem
 
 import tianshou as ts
 from problems.tsp.tsp_env import TSP_env
+from torch.utils.tensorboard import SummaryWriter
+from tianshou.utils import TensorboardLogger
+from torch.optim.lr_scheduler import ExponentialLR
+
+class Categorical_logits(torch.distributions.categorical.Categorical):
+    def __init__(self, logits, validate_args=None):
+        super(Categorical_logits, self).__init__(logits=logits, validate_args=validate_args)
 
 
-def train(opts):
-    # Figure out what's the problem
+
+def run_DQN(opts):
     problem = load_problem(opts.problem)
 
     actor = AttentionModel(
         opts.embedding_dim,
         opts.hidden_dim,
         problem,
+        output_probs=False,
         n_encode_layers=opts.n_encode_layers,
         mask_inner=True,
         mask_logits=True,
@@ -30,52 +38,30 @@ def train(opts):
         checkpoint_encoder=opts.checkpoint_encoder
     ).to(opts.device)
 
-    critic = V_Estimator(embedding_dim=16).to(opts.device)
-
-    #if opts.use_cuda and torch.cuda.device_count() > 1:
-    #    actor = torch.nn.DataParallel(actor)
-
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     optimizer = optim.Adam([
-        {'params': actor.parameters(), 'lr': 1e-3},
-        #{'params': critic.parameters(), 'lr': 1e-3} # opts.lr_model
+        {'params': actor.parameters(), 'lr': 1e-3}
     ])
 
-    num_train_envs, num_test_envs = 20, 32
+    num_train_envs, num_test_envs = 4, 32
     train_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_train_envs)])
     test_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_test_envs)])
-    env = TSP_env(opts)
 
     gamma, n_step, target_freq = 1.00, 1, 100
 
-    distribution_type = torch.distributions.categorical.Categorical
-    #policy = ts.policy.PPOPolicy(actor=actor, critic=critic, optim=optimizer, dist_fn=distribution_type, discount_factor=gamma)
+    distribution_type = Categorical_logits
     policy = ts.policy.DQNPolicy(actor, optimizer, gamma, n_step, target_update_freq=target_freq)
 
-    epoch, batch_size = 10, 64
-    
-    
+    epoch, batch_size = 50, 64
     eps_train, eps_test = 0.1, 0.05
     buffer_size = 100000
 
     num_train_episodes, num_test_episodes = 20, 100 # has to be larger than num_train_env or num_test_env
-    step_per_epoch, step_per_collect, repeat_per_collect = 1000, 10, 1
+    step_per_epoch, step_per_collect = 800, 80
 
     train_collector = ts.data.Collector(policy, train_envs, ts.data.VectorReplayBuffer(buffer_size, num_train_episodes), exploration_noise=False)
     test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
 
-
-    #result = ts.trainer.onpolicy_trainer(
-    #    policy=policy,
-    #    train_collector=train_collector,
-    #    test_collector=test_collector,
-    #    max_epoch=epoch,
-    #    step_per_epoch=step_per_epoch,
-    #    repeat_per_collect=repeat_per_collect,
-    #    episode_per_test=num_test_episodes,
-    #    batch_size=batch_size,
-    #    step_per_collect=step_per_collect
-    #)
 
     result = ts.trainer.offpolicy_trainer( # DOESN'T work with PPO, which makes sense
         policy, train_collector, test_collector, epoch, step_per_epoch, step_per_collect,
@@ -85,6 +71,149 @@ def train(opts):
         #stop_fn=lambda mean_rewards: mean_rewards >= env.spec.reward_threshold,
         #logger=logger
     )
+
+def run_PPO(opts):
+    problem = load_problem(opts.problem)
+
+    actor = AttentionModel(
+        opts.embedding_dim,
+        opts.hidden_dim,
+        problem,
+        output_probs=True,
+        n_encode_layers=opts.n_encode_layers,
+        mask_inner=True,
+        mask_logits=True,
+        normalization=opts.normalization,
+        tanh_clipping=opts.tanh_clipping,
+        checkpoint_encoder=opts.checkpoint_encoder
+    ).to(opts.device)
+
+    critic = V_Estimator(embedding_dim=16).to(opts.device)
+    # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
+    optimizer = optim.Adam([
+        {'params': actor.parameters(), 'lr': 1e-5},
+        {'params': critic.parameters(), 'lr': 1e-4}
+    ])
+
+    lr_scheduler = ExponentialLR(optimizer, gamma=0.99, verbose=False)
+
+    num_train_envs, num_test_envs = 4, 32
+    train_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
+    test_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_test_envs)])
+    gamma = 1.00
+
+    distribution_type = torch.distributions.categorical.Categorical
+    policy = ts.policy.PPOPolicy(actor=actor, 
+                                 critic=critic,
+                                 optim=optimizer,
+                                 dist_fn=distribution_type,
+                                 discount_factor=gamma,
+                                 lr_scheduler=lr_scheduler,
+                                 eps_clip=0.2,
+                                 dual_clip=None,
+                                 value_clip=False,
+                                 advantage_normalization=False,
+                                 vf_coef=0.5,
+                                 ent_coef=0.01,
+                                 gae_lambda=0.95,
+                                 reward_normalization=False, # try this
+                                 deterministic_eval=False)
+
+    epoch, batch_size = 200, 64
+    buffer_size = 5000
+
+    num_train_episodes, num_test_episodes = 20, 100 # has to be larger than num_train_env or num_test_env
+    step_per_epoch, step_per_collect, repeat_per_collect = 800, 80, 5
+
+    train_collector = ts.data.Collector(policy, train_envs, ts.data.VectorReplayBuffer(buffer_size, num_train_episodes), exploration_noise=False)
+    test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
+
+    writer = SummaryWriter('log_dir')
+    logger = TensorboardLogger(writer)
+
+    result = ts.trainer.onpolicy_trainer(
+        policy=policy,
+        train_collector=train_collector,
+        test_collector=test_collector,
+        max_epoch=epoch,
+        step_per_epoch=step_per_epoch,
+        repeat_per_collect=repeat_per_collect,
+        episode_per_test=num_test_episodes,
+        batch_size=batch_size,
+        step_per_collect=step_per_collect,
+        logger=logger
+    )
+
+def run_Reinforce(opts):
+    problem = load_problem(opts.problem)
+
+    actor = AttentionModel(
+        opts.embedding_dim,
+        opts.hidden_dim,
+        problem,
+        output_probs=False,
+        n_encode_layers=opts.n_encode_layers,
+        mask_inner=True,
+        mask_logits=True,
+        normalization=opts.normalization,
+        tanh_clipping=opts.tanh_clipping,
+        checkpoint_encoder=opts.checkpoint_encoder
+    ).to(opts.device)
+
+    # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
+    optimizer = optim.Adam([
+        {'params': actor.parameters(), 'lr': 1e-4},
+    ])
+
+    lr_scheduler = ExponentialLR(optimizer, gamma=0.99, verbose=False)
+
+    num_train_envs, num_test_envs = 4, 32
+    train_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
+    test_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_test_envs)])
+    gamma = 1.00
+
+    distribution_type = Categorical_logits
+    policy = ts.policy.PGPolicy(model=actor, 
+                                optim=optimizer,
+                                dist_fn=distribution_type,
+                                discount_factor=gamma,
+                                lr_scheduler=lr_scheduler,
+                                reward_normalization=False,
+                                deterministic_eval=False)
+
+    epoch, batch_size = 200, 64
+    buffer_size = 5000
+
+    num_train_episodes, num_test_episodes = 20, 100 # has to be larger than num_train_env or num_test_env
+    step_per_epoch, step_per_collect, repeat_per_collect = 800, 80, 5
+
+    train_collector = ts.data.Collector(policy, train_envs, ts.data.VectorReplayBuffer(buffer_size, num_train_episodes), exploration_noise=False)
+    test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
+
+    writer = SummaryWriter('log_dir')
+    logger = TensorboardLogger(writer)
+
+    result = ts.trainer.onpolicy_trainer(
+        policy=policy,
+        train_collector=train_collector,
+        test_collector=test_collector,
+        max_epoch=epoch,
+        step_per_epoch=step_per_epoch,
+        repeat_per_collect=repeat_per_collect,
+        episode_per_test=num_test_episodes,
+        batch_size=batch_size,
+        step_per_collect=step_per_collect,
+        logger=logger
+    )
+
+
+def train(opts):
+    # Figure out what's the problem
+    #run_DQN(opts)
+    #run_Reinforce(opts)
+    run_PPO(opts)
+
+    
 
 
 def run(opts):

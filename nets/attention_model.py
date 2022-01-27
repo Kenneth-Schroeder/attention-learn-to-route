@@ -47,6 +47,7 @@ class AttentionModel(nn.Module):
                  embedding_dim,
                  hidden_dim,
                  problem,
+                 output_probs=False,
                  n_encode_layers=2,
                  tanh_clipping=10.,
                  mask_inner=True,
@@ -67,6 +68,7 @@ class AttentionModel(nn.Module):
         self.is_pctsp = problem.NAME == 'pctsp'
 
         self.tanh_clipping = tanh_clipping
+        self.output_probs = output_probs
 
         self.mask_inner = mask_inner
         self.mask_logits = mask_logits
@@ -122,23 +124,6 @@ class AttentionModel(nn.Module):
             self.temp = temp
 
 
-
-
-
-
-    def act(self, batch_state):
-        log_probs = self(batch_state) # comes in squeezed
-        dist = Categorical(logits=log_probs)
-        actions = dist.sample()
-        batch_state.update(actions)
-        return actions, log_probs.gather(1, actions.view(-1, 1)) # need to un-squeeze for gather
-
-    def evaluate(self, batch_states, actions):
-        log_probs = self(batch_states)
-        dist = Categorical(logits=log_probs)
-        return log_probs.gather(1, actions.view(-1, 1)).squeeze(), dist.entropy()
-
-
     def forward(self, obs, state=None, info=None):
         """
         :param input: state_tsp with batch dimension
@@ -156,11 +141,10 @@ class AttentionModel(nn.Module):
 
 
         logits, mask = self._inner(obs, embeddings)
-        #log_probs = logits
         
-        #log_probs = logits - logits.logsumexp(dim=-1, keepdim=True) # = normalized logits, inspired by torch.Categorical
-        
-        #probs = nn.functional.softmax(logits.squeeze(), dim=1)
+        if self.output_probs:
+            probs = nn.functional.softmax(logits.squeeze(), dim=1)
+            return probs, state
 
         return logits.squeeze(), state # next hidden state
 
@@ -236,8 +220,8 @@ class AttentionModel(nn.Module):
         fixed = self._precompute(embeddings)
 
         # Perform single decoding step
-        if not torch.all(obs['visited']):
-            logits, mask = self._get_logits(fixed, obs)
+        assert(not torch.all(obs['visited']))
+        logits, mask = self._get_logits(fixed, obs)
 
         return logits, mask
 
@@ -391,43 +375,17 @@ class AttentionModel(nn.Module):
             progress = torch.sum(obs['visited'], dim=1).view(batch_size, -1)
             first_a = obs['first_a'].view(batch_size, -1)
 
-            if progress.size(dim=0) > 1:
-                # need to create context for each sample individually
-                placeholders = self.W_placeholder[None, None, :].view(1, -1).expand(batch_size, self.W_placeholder.size(-1))
-                
-                indices = torch.cat((first_a, current_node), 1)[:, :, None]
-                indices[indices < 0] = 0
-                indices = indices.expand(batch_size, 2, embeddings.size(-1))
-                # indices have shape (batch_size, 2, embeddings_size) and embeddings (batch_size, #nodes, embedding_size); this way I can gather whole vectors
-                values = embeddings.gather(1, indices).view(batch_size, -1)
-                contexts = torch.where(progress == 0, placeholders, values).view(batch_size, 1, -1)
+            # need to create context for each sample individually
+            placeholders = self.W_placeholder[None, None, :].view(1, -1).expand(batch_size, self.W_placeholder.size(-1))
 
-                return contexts
-        
-            # if all are at the same i
-            if num_steps == 1:  # We need to special case if we have only 1 step, may be the first or not
-                if torch.all(obs['visited'] == 0):
-                    # First and only step, ignore first_a (this is a placeholder)
-                    return self.W_placeholder[None, None, :].expand(batch_size, 1, self.W_placeholder.size(-1))
-                else:
-                    return embeddings.gather(
-                        1,
-                        torch.cat((first_a, current_node), 1)[:, :, None].expand(batch_size, 2, embeddings.size(-1))
-                    ).view(batch_size, 1, -1)
-            # More than one step, assume always starting with first
-            embeddings_per_step = embeddings.gather(
-                1,
-                current_node[:, 1:, None].expand(batch_size, num_steps - 1, embeddings.size(-1))
-            )
-            return torch.cat((
-                # First step placeholder, cat in dim 1 (time steps)
-                self.W_placeholder[None, None, :].expand(batch_size, 1, self.W_placeholder.size(-1)),
-                # Second step, concatenate embedding of first with embedding of current/previous (in dim 2, context dim)
-                torch.cat((
-                    embeddings_per_step[:, 0:1, :].expand(batch_size, num_steps - 1, embeddings.size(-1)),
-                    embeddings_per_step
-                ), 2)
-            ), 1)
+            indices = torch.cat((first_a, current_node), 1)[:, :, None]
+            indices[indices < 0] = 0
+            indices = indices.expand(batch_size, 2, embeddings.size(-1))
+            # indices have shape (batch_size, 2, embeddings_size) and embeddings (batch_size, #nodes, embedding_size); this way I can gather whole vectors
+            values = embeddings.gather(1, indices).view(batch_size, -1)
+            contexts = torch.where(progress == 0, placeholders, values).view(batch_size, 1, -1)
+
+            return contexts
 
     def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask):
         batch_size, num_steps, embed_dim = query.size()
