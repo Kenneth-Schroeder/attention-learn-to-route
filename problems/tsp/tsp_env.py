@@ -45,9 +45,10 @@ class TSP_env(gym.Env):
   def step(self, action):
     old_batch_state = self.batch_state
     
-    masked_action = action
     visited = self.batch_state.visited_.squeeze()
-    assert(not visited[masked_action].item()), "The node passed to the env's step function was already visited!"
+    assert(not visited[action].item()), "The node passed to the env's step function was already visited!"
+
+    masked_action = action
     if visited[masked_action].item():
       non_zero_idxs = (visited == 0).nonzero()
       masked_action = non_zero_idxs[0]
@@ -55,7 +56,7 @@ class TSP_env(gym.Env):
     action_batch = torch.tensor([masked_action], device=self.opts.device)
 
     self.batch_state = self.batch_state.update(action_batch)
-    reward = -TSP.get_step_cost(old_batch_state, self.batch_state, self.opts.device).item()
+    reward = -TSP.get_step_cost(old_batch_state, self.batch_state).item()
     done = self.batch_state.finished.item()
     info = {} # empty dict
 

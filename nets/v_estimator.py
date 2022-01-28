@@ -47,7 +47,7 @@ class V_Estimator(nn.Module):
             normalization=normalization
         )
 
-        
+
 
     def forward(self, obs, state=None, info=None):
         loc = obs['loc']
@@ -102,8 +102,9 @@ class V_Estimator(nn.Module):
         embeddings = nn.functional.leaky_relu(self.node_embed_fc1(embeddings), negative_slope=0.2)
         embeddings = nn.functional.leaky_relu(self.node_embed_fc2(embeddings), negative_slope=0.2)
         node_values = self.node_embed_to_value(embeddings).squeeze() # squeeze removes dimensions of size 1
+        state_values = -torch.mean(node_values, dim=1)
 
-        return -torch.mean(node_values, dim=1)
+        return state_values
        
 
     def _init_embed(self, input):

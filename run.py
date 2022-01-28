@@ -49,7 +49,6 @@ def run_DQN(opts):
 
     gamma, n_step, target_freq = 1.00, 1, 100
 
-    distribution_type = Categorical_logits
     policy = ts.policy.DQNPolicy(actor, optimizer, gamma, n_step, target_update_freq=target_freq)
 
     epoch, batch_size = 50, 64
@@ -79,7 +78,7 @@ def run_PPO(opts):
         opts.embedding_dim,
         opts.hidden_dim,
         problem,
-        output_probs=True,
+        output_probs=False,
         n_encode_layers=opts.n_encode_layers,
         mask_inner=True,
         mask_logits=True,
@@ -97,12 +96,12 @@ def run_PPO(opts):
 
     lr_scheduler = ExponentialLR(optimizer, gamma=0.99, verbose=False)
 
-    num_train_envs, num_test_envs = 4, 32
+    num_train_envs, num_test_envs = 64, 64
     train_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
     test_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_test_envs)])
     gamma = 1.00
 
-    distribution_type = torch.distributions.categorical.Categorical
+    distribution_type = Categorical_logits
     policy = ts.policy.PPOPolicy(actor=actor, 
                                  critic=critic,
                                  optim=optimizer,
@@ -119,11 +118,11 @@ def run_PPO(opts):
                                  reward_normalization=False, # try this
                                  deterministic_eval=False)
 
-    epoch, batch_size = 200, 64
-    buffer_size = 5000
+    epoch, batch_size = 200, 1024
+    buffer_size = 25600
 
-    num_train_episodes, num_test_episodes = 20, 100 # has to be larger than num_train_env or num_test_env
-    step_per_epoch, step_per_collect, repeat_per_collect = 800, 80, 5
+    num_train_episodes, num_test_episodes = 64, 1024 # has to be larger than num_train_env or num_test_env
+    step_per_epoch, step_per_collect, repeat_per_collect = 25600, 1280, 2
 
     train_collector = ts.data.Collector(policy, train_envs, ts.data.VectorReplayBuffer(buffer_size, num_train_episodes), exploration_noise=False)
     test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
@@ -212,6 +211,13 @@ def train(opts):
     #run_DQN(opts)
     #run_Reinforce(opts)
     run_PPO(opts)
+
+    #env = TSP_env(opts)
+    #done = False
+    #print(env.reset())
+    #while(not done):
+    #    action = int(input())
+    #    print(env.step(action))
 
     
 

@@ -13,12 +13,6 @@ from utils.functions import sample_many
 from torch.distributions.categorical import Categorical
 
 
-def set_decode_type(model, decode_type):
-    if isinstance(model, DataParallel):
-        model = model.module
-    model.set_decode_type(decode_type)
-
-
 class AttentionModelFixed(NamedTuple):
     """
     Context for AttentionModel decoder that is fixed during decoding so can be precomputed/cached
@@ -60,7 +54,6 @@ class AttentionModel(nn.Module):
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
         self.n_encode_layers = n_encode_layers
-        self.decode_type = None
         self.temp = 1.0
         self.allow_partial = problem.NAME == 'sdvrp'
         self.is_vrp = problem.NAME == 'cvrp' or problem.NAME == 'sdvrp'
@@ -118,21 +111,12 @@ class AttentionModel(nn.Module):
         # Note n_heads * val_dim == embedding_dim so input to project_out is embedding_dim
         self.project_out = nn.Linear(embedding_dim, embedding_dim, bias=False)
 
-    def set_decode_type(self, decode_type, temp=None):
-        self.decode_type = decode_type
-        if temp is not None:  # Do not change temperature if not provided
-            self.temp = temp
-
 
     def forward(self, obs, state=None, info=None):
         """
         :param input: state_tsp with batch dimension
         :return:
         """
-        #progress = torch.sum(obs['visited'], dim=1)
-        #print(state)
-        #print(progress)
-        #print(obs['done'])
 
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
             embeddings, _ = checkpoint(self.embedder, self._init_embed(obs['loc']))
@@ -239,27 +223,6 @@ class AttentionModel(nn.Module):
             batch_rep, iter_rep
         )
 
-    def _select_node(self, probs, mask):
-
-        assert (probs == probs).all(), "Probs should not contain any nans"
-
-        if self.decode_type == "greedy":
-            _, selected = probs.max(1)
-            assert not mask.gather(1, selected.unsqueeze(
-                -1)).data.any(), "Decode greedy: infeasible action has maximum probability"
-
-        elif self.decode_type == "sampling":
-            selected = probs.multinomial(1).squeeze(1)
-
-            # Check if sampling went OK, can go wrong due to bug on GPU
-            # See https://discuss.pytorch.org/t/bad-behavior-of-multinomial-function/10232
-            while mask.gather(1, selected.unsqueeze(-1)).data.any():
-                print('Sampled bad values, resampling!')
-                selected = probs.multinomial(1).squeeze(1)
-
-        else:
-            assert False, "Unknown decode type"
-        return selected
 
     def _precompute(self, embeddings, num_steps=1):
         # The fixed context projection of the graph embedding is calculated only once for efficiency
