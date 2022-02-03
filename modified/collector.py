@@ -201,6 +201,7 @@ class Collector_custom(object):
         episode_rews = []
         episode_lens = []
         episode_start_indices = []
+        my_logits = []
 
         while True:
             assert len(self.data) == len(ready_env_ids)
@@ -229,6 +230,7 @@ class Collector_custom(object):
                 if self.exploration_noise:
                     act = self.policy.exploration_noise(act, self.data)
                 self.data.update(policy=policy, act=act, logits=result.logits)
+                my_logits.append(result.logits)
 
             # get bounded and remapped actions first (not saved into buffer)
             action_remap = self.policy.map_action(self.data.act)
@@ -330,4 +332,5 @@ class Collector_custom(object):
             "len": len_mean,
             "rew_std": rew_std,
             "len_std": len_std,
+            "logits": torch.stack(my_logits).permute(1, 0, 2),
         }

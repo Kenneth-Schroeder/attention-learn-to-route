@@ -302,7 +302,7 @@ def train_original(model, optimizer, problem, opts):
     obs = env.reset()
     done = False
 
-    for _ in range(30):
+    for epoch_idx in range(10):
         epoch_costs = 0
         for _ in range(opts.epoch_size):
             costs = []
@@ -337,13 +337,9 @@ def train_original(model, optimizer, problem, opts):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            print("/////")
-            print(log_probs)
-            print(costs)
-            print(costs * log_probs)
             print(costs.mean())
             #print(loss)
-        print(f'Epoch Loss: {epoch_costs/opts.epoch_size}')
+        print(f'Epoch {epoch_idx} Costs: {epoch_costs/opts.epoch_size}')
 
 
 def run_original_reinforce_with_env(opts):
@@ -374,6 +370,92 @@ def run_original_reinforce_with_env(opts):
     )
 
 
+def runReinforceBatched(opts):
+    problem = load_problem(opts.problem)
+
+    actor = AttentionModel(
+        opts.embedding_dim,
+        opts.hidden_dim,
+        problem,
+        output_probs=False,
+        n_encode_layers=opts.n_encode_layers,
+        mask_inner=True,
+        mask_logits=True,
+        normalization=opts.normalization,
+        tanh_clipping=opts.tanh_clipping,
+        checkpoint_encoder=opts.checkpoint_encoder
+    ).to(opts.device)
+
+    optimizer = optim.Adam([
+        {'params': actor.parameters(), 'lr': opts.lr_model},
+    ])
+
+    lr_scheduler = ExponentialLR(optimizer, gamma=0.99, verbose=False)
+
+    episode_per_collect = opts.batch_size
+    num_train_envs = episode_per_collect
+    
+    episode_len = opts.graph_size
+    transitions_per_collect = episode_len * episode_per_collect
+    step_per_epoch = 20 * transitions_per_collect
+    repeat_per_collect = 1
+    gamma = 1.00
+    batch_size = transitions_per_collect
+
+    distribution_type = Categorical_logits
+    policy = PGPolicyTraj(model=actor,
+                          optim=optimizer,
+                          dist_fn=distribution_type,
+                          discount_factor=gamma,
+                          #lr_scheduler=lr_scheduler,
+                          reward_normalization=False,
+                          deterministic_eval=False)
+
+
+    train_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_train_envs)])
+    train_collector = Collector_custom(policy, train_envs, VectorReplayBuffer_custom(total_size=transitions_per_collect, buffer_num=num_train_envs), exploration_noise=False)
+
+    
+
+
+    for epoch_idx in range(10):
+        epoch_costs = 0
+        for _ in range(opts.epoch_size):
+            rewards = []
+            log_probs = []
+
+
+            result_info = train_collector.collect(n_episode=episode_per_collect)
+            batch = train_collector.buffer
+
+            for episode_idx in range(episode_per_collect):
+                start_idx = episode_idx*episode_len
+                episode = batch[start_idx:start_idx+episode_len]
+
+                act = torch.tensor(episode.act, device=opts.device)
+                rew = torch.tensor(episode.rew, device=opts.device)
+
+                my_log_probs = result_info['logits'][episode_idx].gather(dim=1, index=act[:, None])
+                
+                episode_reward = rew.sum()
+                rewards.append(episode_reward)
+
+                episode_log_prob = my_log_probs.sum()
+                log_probs.append(episode_log_prob)
+
+            # calculate total cost, total log_prob
+            rewards = torch.stack(rewards)
+            log_probs = torch.stack(log_probs)
+            loss = -(rewards * log_probs).mean()
+            epoch_costs += rewards.mean()
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            #lr_scheduler.step()
+            print(rewards.mean())
+
+        print(f'Epoch {epoch_idx} Costs: {epoch_costs/opts.epoch_size}')
 
 
 
@@ -384,9 +466,9 @@ def train(opts):
     #run_Reinforce(opts)
     
     #run_PPO(opts)
+    #run_ReinforceCustom(opts)
+    runReinforceBatched(opts)
     #run_original_reinforce_with_env(opts)
-    torch.autograd.set_detect_anomaly(True)
-    run_ReinforceCustom(opts)
 
     #env = TSP_env(opts)
     #done = False
