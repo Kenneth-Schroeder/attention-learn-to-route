@@ -123,8 +123,8 @@ class AttentionModel(nn.Module):
         else:
             embeddings, _ = self.embedder(self._init_embed(obs['loc']))
 
-
         logits, mask = self._inner(obs, embeddings)
+        logits = logits - logits.logsumexp(dim=-1, keepdim=True) # = normalized logits, inspired by torch.Categorical
         
         if self.output_probs:
             probs = nn.functional.softmax(logits.squeeze(), dim=1)
