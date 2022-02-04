@@ -10,7 +10,7 @@ from torch import nn
 
 from tianshou.data import Batch, ReplayBuffer, to_numpy, to_torch_as
 from modified.rb import ReplayBuffer_custom
-
+import scipy.signal as signal
 
 class BasePolicy_custom(ABC, nn.Module):
     """The base class for any RL policy.
@@ -241,6 +241,20 @@ class BasePolicy_custom(ABC, nn.Module):
         return mask
 
     @staticmethod
+    def compute_reward_to_go(rewards, discount): # from https://stackoverflow.com/questions/47970683/vectorize-a-numpy-discount-calculation
+        """
+        C[i] = R[i] + discount * C[i+1]
+        signal.lfilter(b, a, x, axis=-1, zi=None)
+        a[0]*y[n] = b[0]*x[n] + b[1]*x[n-1] + ... + b[M]*x[n-M]
+                              - a[1]*y[n-1] - ... - a[N]*y[n-N]
+        """
+        r = rewards[::-1]
+        a = [1, -discount]
+        b = [1]
+        y = signal.lfilter(b, a, x=r)
+        return y[::-1]
+
+    @staticmethod
     def compute_episodic_return(
         batch: Batch,
         buffer: ReplayBuffer,
@@ -276,10 +290,12 @@ class BasePolicy_custom(ABC, nn.Module):
 
         end_flag = batch.done.copy()
         end_flag[np.isin(indices, buffer.unfinished_index())] = True
+
         advantage = _gae_return(v_s, v_s_, rew, end_flag, gamma, gae_lambda)
         returns = advantage + v_s
         # normalization varies from each policy, so we don't do it here
         return returns, advantage
+
 
     @staticmethod
     def compute_nstep_return(
@@ -352,9 +368,9 @@ def _gae_return(
     gae_lambda: float,
 ) -> np.ndarray:
     returns = np.zeros(rew.shape)
-    delta = rew + v_s_ * gamma - v_s
-    discount = (1.0 - end_flag) * (gamma * gae_lambda)
-    gae = 0.0
+    delta = rew + v_s_ * gamma - v_s # will be equal to rewards if no value functions are used
+    discount = (1.0 - end_flag) * (gamma * gae_lambda) # discount at each i, will always be 1 in my case, and 0 at end of episodes
+    gae = 0.0 # running value
     for i in range(len(rew) - 1, -1, -1):
         gae = delta[i] + discount[i] * gae
         returns[i] = gae

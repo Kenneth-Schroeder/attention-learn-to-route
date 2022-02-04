@@ -10,7 +10,7 @@ from tianshou.utils import RunningMeanStd
 from modified.base import BasePolicy_custom
 
 
-class PGPolicyTraj(BasePolicy_custom):
+class PGPolicy_custom(BasePolicy): # BasePolicy_custom
     """Implementation of REINFORCE algorithm.
     :param torch.nn.Module model: a model following the rules in
         :class:`~tianshou.policy.BasePolicy`. (s -> logits)
@@ -118,65 +118,18 @@ class PGPolicyTraj(BasePolicy_custom):
         self, batch: Batch, batch_size: int, repeat: int, **kwargs: Any
     ) -> Dict[str, List[float]]:
         losses = []
-        num_episodes = np.count_nonzero(batch.done)
-        episode_len = int(len(batch.done)/num_episodes)
         for _ in range(repeat):
-            episode_rewards = []
-            episode_log_probs = []
-            all_rewards = []
-            all_log_probs = []
-            for episode_idx in range(num_episodes):
-                start_idx = episode_idx*episode_len
-                episode = batch[start_idx:start_idx+episode_len]
-
-
-                result = self(episode)
-
-
-
+            for minibatch in batch.split(batch_size, merge_last=True):
+                self.optim.zero_grad()
+                result = self(minibatch)
                 dist = result.dist
-                act = to_torch_as(episode.act, result.act)
-
-
-                #print("//////////")
-                #print(batch.logits)
-                #print(act)
-                #print(result.logits)
-                #assert(1==0)
-
-                #print(batch.logits.gather(dim=1, index=act[:, None]))
-                
-                #my_dist = self.dist_fn(episode.logits)
-                my_log_probs = episode.logits.gather(dim=1, index=act[:, None]) #my_dist.log_prob(act)
-                #print(dist.log_prob(act))
-                #assert(1==0)
-
-
-                rewards = to_torch(episode.rew, device=result.act.device)
-                #episode_reward = rewards.sum()
-                #episode_rewards.append(episode_reward)
-                #log_prob = my_log_probs
-                ##log_prob = dist.log_prob(act)
-                #episode_log_prob = log_prob.sum()
-                #episode_log_probs.append(episode_log_prob)
-
-                all_rewards.append(rewards)
-                all_log_probs.append(my_log_probs)
-
-            #episode_rewards = torch.stack(episode_rewards)
-            #episode_log_probs = torch.stack(episode_log_probs)
-            episode_rewards = torch.stack(all_rewards).sum(dim=1)
-            episode_log_probs = torch.stack(all_log_probs).sum(dim=1)
-
-            print(episode_rewards)
-            print(episode_log_probs)
-            loss = -(episode_rewards * episode_log_probs).mean()
-
-            self.optim.zero_grad()
-            loss.backward(retain_graph=True)
-            self.optim.step()
-            losses.append(loss.item())
-
+                act = to_torch_as(minibatch.act, result.act)
+                ret = to_torch(minibatch.returns, torch.float, result.act.device)
+                log_prob = dist.log_prob(act).reshape(len(ret), -1).transpose(0, 1)
+                loss = -(log_prob * ret).mean()
+                loss.backward()
+                self.optim.step()
+                losses.append(loss.item())
         # update learning rate if lr_scheduler is given
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
