@@ -111,18 +111,39 @@ class AttentionModel(nn.Module):
         # Note n_heads * val_dim == embedding_dim so input to project_out is embedding_dim
         self.project_out = nn.Linear(embedding_dim, embedding_dim, bias=False)
 
+    
 
+
+    def encode(self, obs, state=None, info=None):
+        if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
+            embeddings, _ = checkpoint(self.embedder, self._init_embed(obs['loc']))
+        else:
+            embeddings, _ = self.embedder(self._init_embed(obs['loc']))
+
+        return embeddings
+
+    # will only be used for STE as this will receive embeddings for first_a and prev_a instead of indices
+    def decode(self, obs, embeddings, state=None):
+        logits, mask = self._inner_STE(obs, embeddings)
+        batch_size = obs['loc'].shape[0]
+        
+        if self.output_probs:
+            probs = nn.functional.softmax(logits.squeeze(), dim=1)
+            return probs, state
+
+        return logits.view(batch_size, -1), state # next hidden state
+
+
+
+
+    # regular forward function, combining encode and decode
     def forward(self, obs, state=None, info=None):
         """
         :param input: state_tsp with batch dimension
         :return:
         """
 
-        if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
-            embeddings, _ = checkpoint(self.embedder, self._init_embed(obs['loc']))
-        else:
-            embeddings, _ = self.embedder(self._init_embed(obs['loc']))
-
+        embeddings = self.encode(obs, state, info)
 
         logits, mask = self._inner(obs, embeddings)
         
@@ -209,6 +230,16 @@ class AttentionModel(nn.Module):
 
         return logits, mask
 
+    def _inner_STE(self, obs, embeddings):
+        # Compute keys, values for the glimpse and keys for the logits once as they can be reused in every step
+        fixed = self._precompute(embeddings)
+
+        # Perform single decoding step
+        assert(not torch.all(obs['visited']))
+        logits, mask = self._get_logits_STE(fixed, obs)
+
+        return logits, mask
+
     def sample_many(self, input, batch_rep=1, iter_rep=1):
         """
         :param input: (batch_size, graph_size, node_dim) input node features
@@ -260,6 +291,26 @@ class AttentionModel(nn.Module):
         # Compute query = context node embedding
         query = fixed.context_node_projected + \
                 self.project_step_context(self._get_parallel_step_context(fixed.node_embeddings, obs))
+
+        # Compute keys and values for the nodes
+        glimpse_K, glimpse_V, logit_K = self._get_attention_node_data(fixed, obs)
+
+        # Compute the mask
+        mask = obs['visited'] > 0
+        mask = mask[:, None, :]
+
+        # Compute logits (unnormalized logits)
+        logits, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
+
+        assert not torch.isnan(logits).any()
+
+        return logits, mask
+
+    def _get_logits_STE(self, fixed, obs):
+
+        # Compute query = context node embedding
+        query = fixed.context_node_projected + \
+                self.project_step_context(self._get_parallel_step_context_STE(fixed.node_embeddings, obs))
 
         # Compute keys and values for the nodes
         glimpse_K, glimpse_V, logit_K = self._get_attention_node_data(fixed, obs)
@@ -350,6 +401,38 @@ class AttentionModel(nn.Module):
 
             return contexts
 
+    def _get_parallel_step_context_STE(self, embeddings, obs, from_depot=False):
+        """
+        Returns the context per step, optionally for multiple steps at once (for efficient evaluation of the model)
+        
+        :param embeddings: (batch_size, graph_size, embed_dim)
+        :param prev_a: (batch_size, num_steps)
+        :param first_a: Only used when num_steps = 1, action of first step or None if first step
+        :return: (batch_size, num_steps, context_dim)
+        """
+
+        batch_size = obs['loc'].shape[0]
+        current_node = obs['prev_a'].view(batch_size, -1)
+        batch_size, num_steps = current_node.size()
+        progress = torch.sum(obs['visited'], dim=1).view(batch_size, -1)
+
+        # need to create context for each sample individually
+        placeholders = self.W_placeholder[None, None, :].view(1, -1).expand(batch_size, self.W_placeholder.size(-1))
+
+        # values should have shape (batch_size, 2, embedding_size) -> first_a and prev_a embeddings for each batch element
+        # obs.first_a and obs.prev_a should each have shape (batch_size, embedding_size)
+        
+        prev_a = obs['prev_a']
+        first_a = obs['first_a']
+        if prev_a.shape[-1] == 1:
+            prev_a = torch.zeros((batch_size, embeddings.size(-1)), device=placeholders.device)
+            first_a = torch.zeros((batch_size, embeddings.size(-1)), device=placeholders.device) # will be unselected in next step anyway, just used as placeholders of the right size
+        
+        values = torch.stack([first_a, prev_a], dim=1).view(batch_size, -1)
+        contexts = torch.where(progress == 0, placeholders, values).view(batch_size, 1, -1)
+
+        return contexts
+
     def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask):
         batch_size, num_steps, embed_dim = query.size()
         key_size = val_size = embed_dim // self.n_heads
@@ -371,7 +454,7 @@ class AttentionModel(nn.Module):
         glimpse = self.project_out(
             heads.permute(1, 2, 3, 0, 4).contiguous().view(-1, num_steps, 1, self.n_heads * val_size))
 
-        # Now projecting the glimpse is not needed since this can be absorbed into project_out
+        # Now projecting the g nce this can be absorbed into project_out
         # final_Q = self.project_glimpse(glimpse)
         final_Q = glimpse
         # Batch matrix multiplication to compute logits (batch_size, num_steps, graph_size)

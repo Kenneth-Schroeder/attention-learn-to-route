@@ -66,7 +66,7 @@ class StateOP(NamedTuple):
             # Additionally, substract epsilon margin for numeric stability
             max_length=max_length[:, None] - (depot[:, None, :] - coords).norm(p=2, dim=-1) - 1e-6,
             ids=torch.arange(batch_size, dtype=torch.int64, device=loc.device)[:, None],  # Add steps dimension
-            prev_a=torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device),
+            prev_a = torch.full(size=(batch_size, 1), fill_value=-1, dtype=torch.long, device=loc.device),
             visited_=(  # Visited as mask is easier to understand, as long more memory efficient
                 # Keep visited_ with depot so we can scatter efficiently (if there is an action for depot)
                 torch.zeros(
@@ -79,8 +79,12 @@ class StateOP(NamedTuple):
             lengths=torch.zeros(batch_size, 1, device=loc.device),
             cur_coord=input['depot'][:, None, :],  # Add step dimension
             cur_total_prize=torch.zeros(batch_size, 1, device=loc.device),
-            i=torch.zeros(1, dtype=torch.int64, device=loc.device)  # Vector with length num_steps
+            i=torch.zeros(batch_size, 1, dtype=torch.int64, device=loc.device)  # Vector with length num_steps
         )
+
+    @property
+    def finished(self):
+        return torch.sum(self.visited_, dim=2) >= self.visited_.shape[2]
 
     def get_remaining_length(self):
         # max_length[:, 0] is max length arriving at depot so original max_length
@@ -93,9 +97,6 @@ class StateOP(NamedTuple):
         return -self.cur_total_prize
 
     def update(self, selected):
-
-        assert self.i.size(0) == 1, "Can only update if state represents single step"
-
         # Update the state
         selected = selected[:, None]  # Add dimension for step
         prev_a = selected
@@ -123,7 +124,8 @@ class StateOP(NamedTuple):
     def all_finished(self):
         # All must be returned to depot (and at least 1 step since at start also prev_a == 0)
         # This is more efficient than checking the mask
-        return self.i.item() > 0 and (self.prev_a == 0).all()
+        #return self.i.item() > 0 and (self.prev_a == 0).all()
+        return torch.all(self.i >= self.loc.size(-2))
         # return self.visited[:, :, 0].all()  # If we have visited the depot we're done
 
     def get_current_node(self):

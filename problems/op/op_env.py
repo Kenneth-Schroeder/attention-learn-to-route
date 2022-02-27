@@ -6,23 +6,23 @@ import torch
 from utils import move_to
 import numpy as np
 
-class TSP_env(gym.Env):
+class OP_env(gym.Env):
   """Custom Environment that follows gym interface"""
   metadata = {'render.modes': ['human']}
 
   def __init__(self, opts):
-    super(TSP_env, self).__init__()
+    super(OP_env, self).__init__()
 
     self.opts = opts
     num_nodes = opts.graph_size
 
     obs_dict = {
       'loc': spaces.Box(low=0, high=1, shape=(num_nodes, 2)),
-      'dist': spaces.Box(low=0, high=1.415, shape=(num_nodes, num_nodes)),
-      'first_a': spaces.Discrete(num_nodes),
+      'depot': spaces.Box(low=0, high=1, shape=(2,)),
+      'prize': spaces.Box(low=0, high=np.inf, shape=(num_nodes,)),
       'prev_a': spaces.Discrete(num_nodes),
       'visited': spaces.MultiBinary(num_nodes),
-      'length': spaces.Box(low=0, high=np.inf, shape=(1,))
+      'remaining_length': spaces.Box(low=0, high=np.inf, shape=(1,))
     }
 
     self.observation_space = spaces.Dict(obs_dict)
@@ -31,22 +31,19 @@ class TSP_env(gym.Env):
     self.dataset = TSP.make_dataset(size=self.opts.graph_size, num_samples=1, distribution=self.opts.data_distribution)
     self.batch_state = StateTSP.initialize(move_to(torch.stack(self.dataset.data), self.opts.device))
 
-    #self.action_embeddings = []
-
   def get_obs(self):
     return {
-      'loc': self.batch_state.loc.squeeze(),
-      'dist': self.batch_state.dist.squeeze(),
-      'first_a': self.batch_state.first_a.squeeze(),#self.action_embeddings[0].squeeze() if len(self.action_embeddings) > 0 else self.batch_state.first_a.squeeze(),
-      'prev_a': self.batch_state.prev_a.squeeze(),#self.action_embeddings[-1].squeeze() if len(self.action_embeddings) > 0 else self.batch_state.prev_a.squeeze(),
+      'loc': self.batch_state.loc[:,1:].squeeze(),
+      'depot': self.batch_state.loc[:,1].squeeze(),
+      'prize': self.batch_state.prize.squeeze(),
+      'prev_a': self.batch_state.prev_a.squeeze(),
       'visited': self.batch_state.visited_.squeeze(),
-      'length': self.batch_state.lengths.squeeze()
+      'remaining_length': self.batch_state.get_remaining_length().squeeze()
     }
 
 
-  def step(self, action):#, action_embedding):
+  def step(self, action):
     old_batch_state = self.batch_state
-    #self.action_embeddings.append(action_embedding)
     
     visited = self.batch_state.visited_.squeeze()
     assert(not visited[action].item()), "The node passed to the env's step function was already visited!"

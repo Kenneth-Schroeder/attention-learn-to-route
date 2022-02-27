@@ -16,6 +16,8 @@ from torch.utils.tensorboard import SummaryWriter
 from tianshou.utils import TensorboardLogger
 from torch.optim.lr_scheduler import ExponentialLR
 
+from argmaxembed import ArgMaxEmbed
+
 class Categorical_logits(torch.distributions.categorical.Categorical):
     def __init__(self, logits, validate_args=None):
         super(Categorical_logits, self).__init__(logits=logits, validate_args=validate_args)
@@ -234,10 +236,89 @@ def run_Reinforce(opts):
     )
 
 
+
+
+
+def batchify_obs(obs):
+    obs['loc'] = torch.unsqueeze(obs['loc'], dim=0)
+    obs['dist'] = torch.unsqueeze(obs['dist'], dim=0)
+    obs['first_a'] = torch.unsqueeze(obs['first_a'], dim=0)
+    obs['prev_a'] = torch.unsqueeze(obs['prev_a'], dim=0)
+    obs['visited'] = torch.unsqueeze(obs['visited'], dim=0)
+    obs['length'] = torch.unsqueeze(obs['length'], dim=0)
+    return obs
+
+def run_STE_argmax(opts):
+    problem = load_problem(opts.problem)
+
+    model = AttentionModel(
+        opts.embedding_dim,
+        opts.hidden_dim,
+        problem,
+        output_probs=False,
+        n_encode_layers=opts.n_encode_layers,
+        mask_inner=True,
+        mask_logits=True,
+        normalization=opts.normalization,
+        tanh_clipping=opts.tanh_clipping,
+        checkpoint_encoder=opts.checkpoint_encoder
+    ).to(opts.device)
+
+    optimizer = optim.Adam([
+        {'params': model.parameters(), 'lr': opts.lr_model},
+    ])
+
+    env = TSP_env(opts)
+    obs = env.reset()
+    done = False
+
+    for epoch_idx in range(10):
+        epoch_costs = 0
+        for _ in range(opts.epoch_size):
+            costs = []
+            for _ in range(opts.batch_size):
+                total_cost = 0
+                obs = batchify_obs(obs)
+                node_embeddings = model.encode(obs)
+
+                while not done:
+                    logits, _ = model.decode(obs, node_embeddings)
+                    
+                    # create class to make a differentiable argmax operation with embedding selection - done
+                    # adjust env to save those embeddings with grads of the whole trajectory - done 
+                    # adjust observation to include the right embeddings - done
+                    # adjust network to use these embeddings for context creation - done
+                    # maybe adjust network to run encoder only once - done
+                    # split model into encoder and decoder for easier use here - done
+                    # done?
+
+                    action, action_embedding = ArgMaxEmbed.apply(logits, node_embeddings.squeeze()) # NOTE: because of the squeeze here this doesnt work for batches!
+                    obs, reward, done, info = env.step(action, action_embedding)
+                    obs = batchify_obs(obs)
+
+                    total_cost += reward
+                obs, done = env.reset(), False
+
+                costs.append(total_cost)
+
+            # calculate total cost
+            costs = torch.tensor(costs, device=opts.device)
+            loss = -costs.mean()
+            epoch_costs += costs.mean()
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            print(costs.mean())
+            #print(loss)
+        print(f'Epoch {epoch_idx} Costs: {epoch_costs/opts.epoch_size}')
+
+
 def train(opts):
     # Figure out what's the problem
-    run_DQN(opts)
-    #run_Reinforce(opts)
+    #run_STE_argmax(opts)
+    #run_DQN(opts)
+    run_Reinforce(opts)
     #run_PPO(opts)
 
 
