@@ -11,6 +11,12 @@ class OP(object):
     NAME = 'op'  # Orienteering problem
 
     @staticmethod
+    def get_step_cost(state, next_state):
+        # cost is negative prize received at next location
+        cost = -next_state.prize.gather(1, next_state.prev_a).flatten()
+        return cost
+
+    @staticmethod
     def get_costs(dataset, pi):
         if pi.size(-1) == 1:  # In case all tours directly return to depot, prevent further problems
             assert (pi == 0).all(), "If all length 1 tours, they should be zero"
@@ -77,6 +83,7 @@ class OP(object):
 def generate_instance(size, prize_type):
     # Details see paper
     MAX_LENGTHS = {
+        5: 1., # only for debugging
         20: 2.,
         50: 3.,
         100: 4.
@@ -90,7 +97,7 @@ def generate_instance(size, prize_type):
     elif prize_type == 'unif':
         prize = (1 + torch.randint(0, 100, size=(size, ))) / 100.
     else:  # Based on distance to depot
-        assert prize_type == 'dist'
+        #assert prize_type == 'dist'
         prize_ = (depot[None, :] - loc).norm(p=2, dim=-1)
         prize = (1 + (prize_ / prize_.max(dim=-1, keepdim=True)[0] * 99).int()).float() / 100.
 
@@ -107,7 +114,7 @@ class OPDataset(Dataset):
     
     def __init__(self, filename=None, size=50, num_samples=1000000, offset=0, distribution='const'):
         super(OPDataset, self).__init__()
-        assert distribution is not None, "Data distribution must be specified for OP"
+        #assert distribution is not None, "Data distribution must be specified for OP"
         # Currently the distribution can only vary in the type of the prize
         prize_type = distribution
 

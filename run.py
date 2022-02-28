@@ -12,6 +12,7 @@ from utils import load_problem
 
 import tianshou as ts
 from problems.tsp.tsp_env import TSP_env
+from problems.op.op_env import OP_env
 from torch.utils.tensorboard import SummaryWriter
 from tianshou.utils import TensorboardLogger
 from torch.optim.lr_scheduler import ExponentialLR
@@ -169,6 +170,7 @@ def run_PPO(opts):
 
 def run_Reinforce(opts):
     problem = load_problem(opts.problem)
+    problem_env_class = { 'tsp': TSP_env, 'op': OP_env }
 
     actor = AttentionModel(
         opts.embedding_dim,
@@ -202,12 +204,12 @@ def run_Reinforce(opts):
     num_test_envs = 1024 # has to be smaller or equal to num_test_episodes
     num_test_episodes = 1024 # just collect this many episodes using policy and checks the performance
 
-    train_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
-    test_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_test_envs)])
+    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
+    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
     gamma = 1.00
 
     distribution_type = Categorical_logits
-    policy = ts.policy.PGPolicy(model=actor, 
+    policy = ts.policy.PGPolicy(model=actor,
                                 optim=optimizer,
                                 dist_fn=distribution_type,
                                 discount_factor=gamma,
@@ -313,6 +315,18 @@ def run_STE_argmax(opts):
             #print(loss)
         print(f'Epoch {epoch_idx} Costs: {epoch_costs/opts.epoch_size}')
 
+def manual_testing_OP(opts):
+    env = OP_env(opts)
+    obs = env.reset()
+    done = False
+
+    print(obs)
+    while not done:
+        obs, reward, done, info = env.step(int(input()))
+        print(obs)
+        print(reward)
+        print(done)
+
 
 def train(opts):
     # Figure out what's the problem
@@ -320,6 +334,9 @@ def train(opts):
     #run_DQN(opts)
     run_Reinforce(opts)
     #run_PPO(opts)
+
+    #manual_testing_OP(opts)
+    
 
 
 

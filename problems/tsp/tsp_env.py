@@ -22,7 +22,8 @@ class TSP_env(gym.Env):
       'first_a': spaces.Discrete(num_nodes),
       'prev_a': spaces.Discrete(num_nodes),
       'visited': spaces.MultiBinary(num_nodes),
-      'length': spaces.Box(low=0, high=np.inf, shape=(1,))
+      'length': spaces.Box(low=0, high=np.inf, shape=(1,)),
+      'mask': spaces.MultiBinary(num_nodes)
     }
 
     self.observation_space = spaces.Dict(obs_dict)
@@ -40,7 +41,8 @@ class TSP_env(gym.Env):
       'first_a': self.batch_state.first_a.squeeze(),#self.action_embeddings[0].squeeze() if len(self.action_embeddings) > 0 else self.batch_state.first_a.squeeze(),
       'prev_a': self.batch_state.prev_a.squeeze(),#self.action_embeddings[-1].squeeze() if len(self.action_embeddings) > 0 else self.batch_state.prev_a.squeeze(),
       'visited': self.batch_state.visited_.squeeze(),
-      'length': self.batch_state.lengths.squeeze()
+      'length': self.batch_state.lengths.squeeze(),
+      'mask': self.batch_state.get_mask()
     }
 
 

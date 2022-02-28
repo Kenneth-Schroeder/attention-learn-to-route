@@ -116,10 +116,10 @@ class AttentionModel(nn.Module):
 
     def encode(self, obs, state=None, info=None):
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
-            embeddings, _ = checkpoint(self.embedder, self._init_embed(obs['loc']))
+            embeddings, _ = checkpoint(self.embedder, self._init_embed(obs))
         else:
-            embeddings, _ = self.embedder(self._init_embed(obs['loc']))
-
+            embeddings, _ = self.embedder(self._init_embed(obs))
+        
         return embeddings
 
     # will only be used for STE as this will receive embeddings for first_a and prev_a instead of indices
@@ -142,7 +142,6 @@ class AttentionModel(nn.Module):
         :param input: state_tsp with batch dimension
         :return:
         """
-
         embeddings = self.encode(obs, state, info)
 
         logits, mask = self._inner(obs, embeddings)
@@ -151,7 +150,7 @@ class AttentionModel(nn.Module):
             probs = nn.functional.softmax(logits.squeeze(), dim=1)
             return probs, state
 
-        return logits.squeeze(), state # next hidden state
+        return logits.view(obs['loc'].shape[0], -1), state # next hidden state
 
 
 
@@ -218,7 +217,7 @@ class AttentionModel(nn.Module):
                 1
             )
         # TSP
-        return self.init_embed(input)
+        return self.init_embed(input['loc'])
 
     def _inner(self, obs, embeddings):
         # Compute keys, values for the glimpse and keys for the logits once as they can be reused in every step
@@ -296,8 +295,7 @@ class AttentionModel(nn.Module):
         glimpse_K, glimpse_V, logit_K = self._get_attention_node_data(fixed, obs)
 
         # Compute the mask
-        mask = obs['visited'] > 0
-        mask = mask[:, None, :]
+        mask = obs['mask']
 
         # Compute logits (unnormalized logits)
         logits, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
@@ -316,8 +314,7 @@ class AttentionModel(nn.Module):
         glimpse_K, glimpse_V, logit_K = self._get_attention_node_data(fixed, obs)
 
         # Compute the mask
-        mask = obs['visited'] > 0
-        mask = mask[:, None, :]
+        mask = obs['mask']
 
         # Compute logits (unnormalized logits)
         logits, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
@@ -378,7 +375,7 @@ class AttentionModel(nn.Module):
                             .expand(batch_size, num_steps, embeddings.size(-1))
                     ).view(batch_size, num_steps, embeddings.size(-1)),
                     (
-                        obs.get_remaining_length()[:, :, None]
+                        obs['remaining_length'][:, :, None]
                         if self.is_orienteering
                         else obs.get_remaining_prize_to_collect()[:, :, None]
                     )
@@ -442,6 +439,7 @@ class AttentionModel(nn.Module):
 
         # Batch matrix multiplication to compute compatibilities (n_heads, batch_size, num_steps, graph_size)
         compatibility = torch.matmul(glimpse_Q, glimpse_K.transpose(-2, -1)) / math.sqrt(glimpse_Q.size(-1))
+
         if self.mask_inner:
             assert self.mask_logits, "Cannot mask inner without masking logits"
             min_comp_value = torch.min(compatibility).detach() # detach cuz cant backpropagate here through mask

@@ -1,7 +1,7 @@
 import gym
 from gym import spaces
-from problems.tsp.problem_tsp import TSP
-from problems.tsp.state_tsp import StateTSP
+from problems.op.problem_op import OP
+from problems.op.state_op import StateOP
 import torch
 from utils import move_to
 import numpy as np
@@ -19,26 +19,30 @@ class OP_env(gym.Env):
     obs_dict = {
       'loc': spaces.Box(low=0, high=1, shape=(num_nodes, 2)),
       'depot': spaces.Box(low=0, high=1, shape=(2,)),
-      'prize': spaces.Box(low=0, high=np.inf, shape=(num_nodes,)),
-      'prev_a': spaces.Discrete(num_nodes),
-      'visited': spaces.MultiBinary(num_nodes),
-      'remaining_length': spaces.Box(low=0, high=np.inf, shape=(1,))
+      'prize': spaces.Box(low=0, high=np.inf, shape=(num_nodes+1,)),
+      'prev_a': spaces.Discrete(num_nodes+1),
+      'visited': spaces.MultiBinary(num_nodes+1),
+      'remaining_length': spaces.Box(low=0, high=np.inf, shape=(1,)),
+      'mask': spaces.MultiBinary(num_nodes+1)
     }
 
     self.observation_space = spaces.Dict(obs_dict)
-    self.action_space = spaces.Discrete(num_nodes)
+    self.action_space = spaces.Discrete(num_nodes+1)
 
-    self.dataset = TSP.make_dataset(size=self.opts.graph_size, num_samples=1, distribution=self.opts.data_distribution)
-    self.batch_state = StateTSP.initialize(move_to(torch.stack(self.dataset.data), self.opts.device))
+    self.dataset = OP.make_dataset(size=self.opts.graph_size, num_samples=1, distribution=self.opts.data_distribution)
+    data = self.dataset.data[0]
+    data.update((k, torch.unsqueeze(move_to(v, self.opts.device), dim=0)) for k,v in data.items())
+    self.batch_state = StateOP.initialize(data)
 
   def get_obs(self):
     return {
-      'loc': self.batch_state.loc[:,1:].squeeze(),
-      'depot': self.batch_state.loc[:,1].squeeze(),
-      'prize': self.batch_state.prize.squeeze(),
+      'loc': self.batch_state.coords[:,1:].squeeze(),
+      'depot': self.batch_state.coords[:,1].squeeze(),
+      'prize': self.batch_state.prize.squeeze()[1:],
       'prev_a': self.batch_state.prev_a.squeeze(),
       'visited': self.batch_state.visited_.squeeze(),
-      'remaining_length': self.batch_state.get_remaining_length().squeeze()
+      'remaining_length': self.batch_state.get_remaining_length().squeeze()[None],
+      'mask': self.batch_state.get_mask()
     }
 
 
@@ -56,15 +60,17 @@ class OP_env(gym.Env):
     action_batch = torch.tensor([masked_action], device=self.opts.device)
 
     self.batch_state = self.batch_state.update(action_batch)
-    reward = -TSP.get_step_cost(old_batch_state, self.batch_state).item()
+    reward = -OP.get_step_cost(old_batch_state, self.batch_state).item()
     done = self.batch_state.finished.item()
     info = {} # empty dict
 
     return self.get_obs(), reward, done, info
 
   def reset(self):
-    self.dataset = TSP.make_dataset(size=self.opts.graph_size, num_samples=1, distribution=self.opts.data_distribution)
-    self.batch_state = StateTSP.initialize(move_to(torch.stack(self.dataset.data), self.opts.device))
+    self.dataset = OP.make_dataset(size=self.opts.graph_size, num_samples=1, distribution=self.opts.data_distribution)
+    data = self.dataset.data[0]
+    data.update((k, torch.unsqueeze(move_to(v, self.opts.device), dim=0)) for k,v in data.items())
+    self.batch_state = StateOP.initialize(data)
 
     return self.get_obs() # reward, done, info can't be included as there are none yet
 
