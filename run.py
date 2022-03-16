@@ -27,6 +27,7 @@ class Categorical_logits(torch.distributions.categorical.Categorical):
 
 def run_DQN(opts):
     problem = load_problem(opts.problem)
+    problem_env_class = { 'tsp': TSP_env, 'op': OP_env }
 
     actor = AttentionModel(
         opts.embedding_dim,
@@ -60,8 +61,8 @@ def run_DQN(opts):
     step_per_collect = buffer_size
 
     num_train_envs, num_test_envs = 4, 32
-    train_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_train_envs)])
-    test_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_test_envs)])
+    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
+    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
 
     gamma, n_step, target_freq = 1.00, 1, 100
     policy = ts.policy.DQNPolicy(actor, optimizer, gamma, n_step, target_update_freq=target_freq)
@@ -82,6 +83,7 @@ def run_DQN(opts):
 
 def run_PPO(opts):
     problem = load_problem(opts.problem)
+    problem_env_class = { 'tsp': TSP_env, 'op': OP_env }
 
     actor = AttentionModel(
         opts.embedding_dim,
@@ -96,7 +98,7 @@ def run_PPO(opts):
         checkpoint_encoder=opts.checkpoint_encoder
     ).to(opts.device)
 
-    critic = V_Estimator(embedding_dim=16).to(opts.device)
+    critic = V_Estimator(embedding_dim=16, problem=problem).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': 1e-4},
@@ -117,8 +119,8 @@ def run_PPO(opts):
     num_test_envs = 1024 # has to be smaller or equal to num_test_episodes
     num_test_episodes = 1024 # just collect this many episodes using policy and checks the performance
 
-    train_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
-    test_envs = ts.env.DummyVectorEnv([lambda: TSP_env(opts) for _ in range(num_test_envs)])
+    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
+    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
     gamma = 1.00
 
     distribution_type = Categorical_logits
@@ -332,8 +334,8 @@ def train(opts):
     # Figure out what's the problem
     #run_STE_argmax(opts)
     #run_DQN(opts)
-    run_Reinforce(opts)
-    #run_PPO(opts)
+    #run_Reinforce(opts)
+    run_PPO(opts)
 
     #manual_testing_OP(opts)
     

@@ -295,7 +295,7 @@ class AttentionModel(nn.Module):
         glimpse_K, glimpse_V, logit_K = self._get_attention_node_data(fixed, obs)
 
         # Compute the mask
-        mask = obs['mask']
+        mask = obs['action_mask']
 
         # Compute logits (unnormalized logits)
         logits, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
@@ -314,7 +314,7 @@ class AttentionModel(nn.Module):
         glimpse_K, glimpse_V, logit_K = self._get_attention_node_data(fixed, obs)
 
         # Compute the mask
-        mask = obs['mask']
+        mask = obs['action_mask']
 
         # Compute logits (unnormalized logits)
         logits, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)

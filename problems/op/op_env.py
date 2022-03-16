@@ -23,7 +23,7 @@ class OP_env(gym.Env):
       'prev_a': spaces.Discrete(num_nodes+1),
       'visited': spaces.MultiBinary(num_nodes+1),
       'remaining_length': spaces.Box(low=0, high=np.inf, shape=(1,)),
-      'mask': spaces.MultiBinary(num_nodes+1)
+      'action_mask': spaces.MultiBinary(num_nodes+1)
     }
 
     self.observation_space = spaces.Dict(obs_dict)
@@ -42,7 +42,7 @@ class OP_env(gym.Env):
       'prev_a': self.batch_state.prev_a.squeeze(),
       'visited': self.batch_state.visited_.squeeze(),
       'remaining_length': self.batch_state.get_remaining_length().squeeze()[None],
-      'mask': self.batch_state.get_mask()
+      'action_mask': self.batch_state.get_mask()
     }
 
 
