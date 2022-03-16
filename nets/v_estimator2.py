@@ -1,28 +1,10 @@
 import torch
 from torch import nn
-from torch.utils.checkpoint import checkpoint
 import math
 from typing import NamedTuple
-from utils.tensor_functions import compute_in_batches
 
 from nets.graph_encoder import GraphAttentionEncoder
 from torch.nn import DataParallel
-from utils.beam_search import CachedLookup
-from utils.functions import sample_many
-
-from problems.tsp.state_tsp import StateTSP
-from utils import move_to
-
-import torch
-from torch import nn
-from torch.utils.checkpoint import checkpoint
-import math
-from typing import NamedTuple
-from utils.tensor_functions import compute_in_batches
-
-from nets.graph_encoder import GraphAttentionEncoder
-from torch.nn import DataParallel
-from utils.beam_search import CachedLookup
 from utils.functions import sample_many
 from utils import torch_load_cpu, load_problem
 
@@ -68,8 +50,7 @@ class V_Estimator2(nn.Module):
                  mask_inner=False,
                  mask_logits=False,
                  normalization='batch',
-                 n_heads=8,
-                 checkpoint_encoder=False):
+                 n_heads=8):
         super(V_Estimator2, self).__init__()
 
         self.embedding_dim = embedding_dim
@@ -89,7 +70,6 @@ class V_Estimator2(nn.Module):
 
         self.problem = problem
         self.n_heads = n_heads
-        self.checkpoint_encoder = checkpoint_encoder
 
         # Problem specific context parameters (placeholder and step context dimension)
         if self.is_vrp or self.is_orienteering or self.is_pctsp:
@@ -146,10 +126,7 @@ class V_Estimator2(nn.Module):
         :return:
         """
 
-        if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
-            embeddings, _ = checkpoint(self.embedder, self._init_embed(batch_states.loc))
-        else:
-            embeddings, _ = self.embedder(self._init_embed(batch_states.loc))
+        embeddings, _ = self.embedder(self._init_embed(batch_states.loc))
 
         aggr, mask = self._inner(batch_states, embeddings)
 
@@ -159,17 +136,6 @@ class V_Estimator2(nn.Module):
 
 
 
-
-
-
-    def beam_search(self, *args, **kwargs):
-        return self.problem.beam_search(*args, **kwargs, model=self)
-
-    def precompute_fixed(self, input):
-        embeddings, _ = self.embedder(self._init_embed(input))
-        # Use a CachedLookup such that if we repeatedly index this object with the same index we only need to do
-        # the lookup once... this is the case if all elements in the batch have maximum batch size
-        return CachedLookup(self._precompute(embeddings))
 
     def _init_embed(self, input):
 

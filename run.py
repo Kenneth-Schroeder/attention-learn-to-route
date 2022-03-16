@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tianshou.utils import TensorboardLogger
 from torch.optim.lr_scheduler import ExponentialLR
 
-from argmaxembed import ArgMaxEmbed
+from nets.argmaxembed import ArgMaxEmbed
 
 class Categorical_logits(torch.distributions.categorical.Categorical):
     def __init__(self, logits, validate_args=None):
@@ -38,8 +38,7 @@ def run_DQN(opts):
         mask_inner=True,
         mask_logits=True,
         normalization=opts.normalization,
-        tanh_clipping=opts.tanh_clipping,
-        checkpoint_encoder=opts.checkpoint_encoder
+        tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
@@ -94,8 +93,7 @@ def run_PPO(opts):
         mask_inner=True,
         mask_logits=True,
         normalization=opts.normalization,
-        tanh_clipping=opts.tanh_clipping,
-        checkpoint_encoder=opts.checkpoint_encoder
+        tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
     critic = V_Estimator(embedding_dim=16, problem=problem).to(opts.device)
@@ -183,8 +181,7 @@ def run_Reinforce(opts):
         mask_inner=True,
         mask_logits=True,
         normalization=opts.normalization,
-        tanh_clipping=opts.tanh_clipping,
-        checkpoint_encoder=opts.checkpoint_encoder
+        tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
@@ -264,8 +261,7 @@ def run_STE_argmax(opts):
         mask_inner=True,
         mask_logits=True,
         normalization=opts.normalization,
-        tanh_clipping=opts.tanh_clipping,
-        checkpoint_encoder=opts.checkpoint_encoder
+        tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
     optimizer = optim.Adam([
@@ -334,8 +330,8 @@ def train(opts):
     # Figure out what's the problem
     #run_STE_argmax(opts)
     #run_DQN(opts)
-    #run_Reinforce(opts)
-    run_PPO(opts)
+    run_Reinforce(opts)
+    #run_PPO(opts)
 
     #manual_testing_OP(opts)
     

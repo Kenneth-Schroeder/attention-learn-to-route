@@ -3,11 +3,9 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 import math
 from typing import NamedTuple
-from utils.tensor_functions import compute_in_batches
 
 from nets.graph_encoder import GraphAttentionEncoder
 from torch.nn import DataParallel
-from utils.beam_search import CachedLookup
 from utils.functions import sample_many
 
 from problems.tsp.state_tsp import StateTSP
@@ -20,14 +18,12 @@ class V_Estimator(nn.Module):
                  problem,
                  n_encode_layers=4,
                  normalization='batch',
-                 n_heads=8,
-                 checkpoint_encoder=False):
+                 n_heads=8):
         super(V_Estimator, self).__init__()
 
         self.embedding_dim = embedding_dim
         self.n_encode_layers = n_encode_layers
         self.n_heads = n_heads
-        self.checkpoint_encoder = checkpoint_encoder
 
         self.is_orienteering = problem.NAME == 'op'
         if self.is_orienteering:
@@ -128,14 +124,8 @@ class V_Estimator(nn.Module):
             my_input = torch.cat((loc, visited, first_a, prev_a), 2) # , min_distances, max_distances, mean_distances
 
 
-
-
-
-        if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
-            embeddings, _ = checkpoint(self.embedder, self._init_embed(my_input))
-        else:
-            e = self._init_embed(my_input)
-            embeddings, _ = self.embedder(e) # EMBEDDER IS GRAPH ATTENTION ENCODER!
+        e = self._init_embed(my_input)
+        embeddings, _ = self.embedder(e) # EMBEDDER IS GRAPH ATTENTION ENCODER!
 
         # graph_embed_mean = embeddings.mean(1)
         # graph_embed_sum = embeddings.sum(1) # TODO use more aggregations and adjust Linear layer.

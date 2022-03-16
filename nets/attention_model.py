@@ -3,11 +3,9 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 import math
 from typing import NamedTuple
-from utils.tensor_functions import compute_in_batches
 
 from nets.graph_encoder import GraphAttentionEncoder
 from torch.nn import DataParallel
-from utils.beam_search import CachedLookup
 from utils.functions import sample_many
 
 from torch.distributions.categorical import Categorical
@@ -47,8 +45,7 @@ class AttentionModel(nn.Module):
                  mask_inner=True,
                  mask_logits=True,
                  normalization='batch',
-                 n_heads=8,
-                 checkpoint_encoder=False):
+                 n_heads=8):
         super(AttentionModel, self).__init__()
 
         self.embedding_dim = embedding_dim
@@ -68,7 +65,6 @@ class AttentionModel(nn.Module):
 
         self.problem = problem
         self.n_heads = n_heads
-        self.checkpoint_encoder = checkpoint_encoder
 
         # Problem specific context parameters (placeholder and step context dimension)
         if self.is_vrp or self.is_orienteering or self.is_pctsp:
@@ -115,11 +111,7 @@ class AttentionModel(nn.Module):
 
 
     def encode(self, obs, state=None, info=None):
-        if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
-            embeddings, _ = checkpoint(self.embedder, self._init_embed(obs))
-        else:
-            embeddings, _ = self.embedder(self._init_embed(obs))
-        
+        embeddings, _ = self.embedder(self._init_embed(obs))
         return embeddings
 
     # will only be used for STE as this will receive embeddings for first_a and prev_a instead of indices
@@ -154,47 +146,6 @@ class AttentionModel(nn.Module):
 
 
 
-
-
-
-    def beam_search(self, *args, **kwargs):
-        return self.problem.beam_search(*args, **kwargs, model=self)
-
-    def precompute_fixed(self, input):
-        embeddings, _ = self.embedder(self._init_embed(input))
-        # Use a CachedLookup such that if we repeatedly index this object with the same index we only need to do
-        # the lookup once... this is the case if all elements in the batch have maximum batch size
-        return CachedLookup(self._precompute(embeddings))
-
-    def propose_expansions(self, beam, fixed, expand_size=None, normalize=False, max_calc_batch_size=4096):
-        # First dim = batch_size * cur_beam_size
-        logits_topk, ind_topk = compute_in_batches(
-            lambda b: self._get_logits_topk(fixed[b.ids], b.state, k=expand_size, normalize=normalize),
-            max_calc_batch_size, beam, n=beam.size()
-        )
-
-        assert logits_topk.size(1) == 1, "Can only have single step"
-        # This will broadcast, calculate logit (score) of expansions
-        score_expand = beam.score[:, None] + logits_topk[:, 0, :]
-
-        # We flatten the action as we need to filter and this cannot be done in 2d
-        flat_action = ind_topk.view(-1)
-        flat_score = score_expand.view(-1)
-        flat_feas = flat_score > -1e10  # != -math.inf triggers
-
-        # Parent is row idx of ind_topk, can be found by enumerating elements and dividing by number of columns
-        flat_parent = torch.arange(flat_action.size(-1), out=flat_action.new()) // ind_topk.size(-1)
-
-        # Filter infeasible
-        feas_ind_2d = torch.nonzero(flat_feas)
-
-        if len(feas_ind_2d) == 0:
-            # Too bad, no feasible expansions at all :(
-            return None, None, None
-
-        feas_ind = feas_ind_2d[:, 0]
-
-        return flat_parent[feas_ind], flat_action[feas_ind], flat_score[feas_ind]
 
     def _init_embed(self, input):
 
