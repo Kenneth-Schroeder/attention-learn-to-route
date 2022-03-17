@@ -142,7 +142,9 @@ class AttentionModel(nn.Module):
             probs = nn.functional.softmax(logits.squeeze(), dim=1)
             return probs, state
 
-        return logits.view(obs['loc'].shape[0], -1), state # next hidden state
+        logits = logits.view(obs['loc'].shape[0], -1)
+        
+        return logits, state # next hidden state
 
 
 

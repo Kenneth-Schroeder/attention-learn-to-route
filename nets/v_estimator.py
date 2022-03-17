@@ -16,6 +16,7 @@ class V_Estimator(nn.Module):
     def __init__(self,
                  embedding_dim,
                  problem,
+                 q_outputs=False,
                  n_encode_layers=4,
                  normalization='batch',
                  n_heads=8):
@@ -24,6 +25,7 @@ class V_Estimator(nn.Module):
         self.embedding_dim = embedding_dim
         self.n_encode_layers = n_encode_layers
         self.n_heads = n_heads
+        self.q_outputs = q_outputs
 
         self.is_orienteering = problem.NAME == 'op'
         if self.is_orienteering:
@@ -133,8 +135,11 @@ class V_Estimator(nn.Module):
         embeddings = nn.functional.leaky_relu(self.node_embed_fc1(embeddings), negative_slope=0.2)
         embeddings = nn.functional.leaky_relu(self.node_embed_fc2(embeddings), negative_slope=0.2)
         node_values = self.node_embed_to_value(embeddings).squeeze() # squeeze removes dimensions of size 1
-        state_values = -torch.mean(node_values, dim=1)
 
+        if self.q_outputs:
+            return node_values
+        
+        state_values = -torch.mean(node_values, dim=1)
         return state_values
        
 
