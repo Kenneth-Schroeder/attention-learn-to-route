@@ -23,3 +23,5 @@ if __name__ == "__main__":
 	fig = px.line(df, x = opts.xlabel, y = opts.ylabel, title=opts.figname, width=opts.width, height=opts.height)
 	fig.update_yaxes(rangemode="tozero")
 	fig.write_image(f"{opts.figname}.pdf")
+
+# Example usage: python csv_to_plot.py --path example.csv --figname example
