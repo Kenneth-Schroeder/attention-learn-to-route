@@ -17,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tianshou.utils import TensorboardLogger
 from torch.optim.lr_scheduler import ExponentialLR
 
+import numpy as np
 from nets.argmaxembed import ArgMaxEmbed
 
 class Categorical_logits(torch.distributions.categorical.Categorical):
@@ -183,7 +184,7 @@ def run_PPO(opts, logger):
     critic = V_Estimator(embedding_dim=16, problem=problem).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     lr_actor = 1e-4
-    lr_critic = 5e-5
+    lr_critic = 1e-5
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': lr_actor},
         {'params': critic.parameters(), 'lr': lr_critic}
@@ -267,26 +268,29 @@ def run_SAC(opts, logger):
     ).to(opts.device)
 
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
+    lr_actor, lr_critic1, lr_critic2 = 1e-4, 1e-5, 1e-5
     actor_optimizer = optim.Adam([
-        {'params': actor.parameters(), 'lr': 1e-3}
+        {'params': actor.parameters(), 'lr': lr_actor}
     ])
 
     critic1 = V_Estimator(embedding_dim=16, q_outputs=True, problem=problem).to(opts.device)
     critic1_optimizer = optim.Adam([
-        {'params': critic1.parameters(), 'lr': 1e-3}
+        {'params': critic1.parameters(), 'lr': lr_critic1}
     ])
 
     critic2 = V_Estimator(embedding_dim=16, q_outputs=True, problem=problem).to(opts.device)
     critic2_optimizer = optim.Adam([
-        {'params': critic2.parameters(), 'lr': 1e-3}
+        {'params': critic2.parameters(), 'lr': lr_critic2}
     ])
 
     num_epochs = 200
     
     num_train_envs = 32 # has to be smaller or equal to episode_per_collect
     episode_per_collect = num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
-    buffer_size = opts.graph_size * episode_per_collect
-    batch_size = buffer_size # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    
+    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    buffer_size = batch_size # doesn't make a lot of sense to multiply here for onpolicy?
+
     step_per_epoch = buffer_size * 100
 
     num_test_envs = 1024 # has to be smaller or equal to num_test_episodes
@@ -295,10 +299,24 @@ def run_SAC(opts, logger):
 
     train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
     test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
-
     gamma = 1.00
+    tau, alpha = 0.005, None
 
+    if alpha == None:
+        dummy_env = problem_env_class[opts.problem](opts)
+        #test_vec = np.array([0.01, 0.81, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01])
+        #log_vec = np.log(test_vec)
+        #ent = np.sum(np.multiply(test_vec, log_vec))
+        #print(ent)
+        #print(dummy_env.action_space)
+        #print(-np.prod(dummy_env.action_space.shape))
+        target_entropy = -np.prod(dummy_env.action_space.shape)
+        log_alpha = torch.zeros(1, requires_grad=True, device=opts.device)
+        alpha_optim = torch.optim.Adam([log_alpha], lr=3e-4)
+        alpha = (target_entropy, log_alpha, alpha_optim)
 
+    logger.writer.add_text("hyperparameters", f"{lr_actor=}, {lr_critic1=}, {lr_critic2=}, {episode_per_collect=}, {batch_size=}, \
+        {step_per_epoch=}, {num_test_envs=}, {tau=}, {alpha=}")
 
     policy = ts.policy.DiscreteSACPolicy(actor=actor, 
                                          actor_optim=actor_optimizer,
@@ -306,9 +324,9 @@ def run_SAC(opts, logger):
                                          critic2=critic2,
                                          critic1_optim=critic1_optimizer,
                                          critic2_optim=critic2_optimizer,
-                                         tau=0.005,
+                                         tau=tau,
                                          gamma=gamma,
-                                         alpha=0.2,
+                                         alpha=alpha,
                                          exploration_noise=None,
                                          reward_normalization=False,
                                          deterministic_eval=False)
@@ -320,9 +338,6 @@ def run_SAC(opts, logger):
     result = ts.trainer.offpolicy_trainer(
         policy, train_collector, test_collector, num_epochs, step_per_epoch, step_per_collect,
         num_test_episodes, batch_size, update_per_step=1 / step_per_collect,
-        #train_fn=lambda epoch, env_step: policy.set_eps(eps_train),
-        #test_fn=lambda epoch, env_step: policy.set_eps(eps_test),
-        #stop_fn=lambda mean_rewards: mean_rewards >= env.spec.reward_threshold,
         logger=logger
     )
 
@@ -427,8 +442,8 @@ def train(opts):
     #run_STE_argmax(opts)
     #run_DQN(opts, logger)
     #run_Reinforce(opts, logger)
-    run_PPO(opts, logger)
-    #run_SAC(opts, logger) # exploding losses problem? maybe check gradient clipping
+    #run_PPO(opts, logger)
+    run_SAC(opts, logger) # exploding losses problem? maybe check gradient clipping
 
     #manual_testing_OP(opts)
     
