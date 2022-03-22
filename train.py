@@ -158,5 +158,5 @@ def train_batch(
 
     # Logging
     if step % int(opts.log_step) == 0:
-        log_values(cost, grad_norms, epoch, batch_id, step,
+        log_values(cost, grad_norms, epoch, batch_id, step * opts.batch_size,
                    log_likelihood, reinforce_loss, bl_loss, tb_logger, opts)
