@@ -68,7 +68,7 @@ class StateTSP(NamedTuple):
             i=torch.zeros(batch_size, 1, dtype=torch.int64, device=loc.device)  # Vector with length num_steps
         )
 
-    def get_final_cost(self):
+    def get_final_cost(self): # deprecated and not used anymore after switch to tianshou
         assert self.all_finished()
         return self.lengths + (self.loc[self.ids, self.first_a, :] - self.cur_coord).norm(p=2, dim=-1)
 

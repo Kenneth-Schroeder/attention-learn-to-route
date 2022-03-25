@@ -1,0 +1,1 @@
+{"key_path": "log_dir/csvs/testreward", "y_df_label": "test/reward", "x_df_label": "Steps", "y_display_label": "average solution length", "x_display_label": "number of samples trained", "run_names": ["run_20220317T145955", "run_20220317T150030", "run_20220317T150034"], "line_names": ["run 1", "run 2", "run 3"], "plot_filename": "dqn_consistency"}

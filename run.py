@@ -25,10 +25,14 @@ class Categorical_logits(torch.distributions.categorical.Categorical):
         super(Categorical_logits, self).__init__(logits=logits, validate_args=validate_args)
 
 
-def updatelog_eps(policy, eps, logger, epoch, log=False):
+def updatelog_eps_lr(policy, eps, logger, epoch, lr_scheduler=None, step=None, batch_size=None, log=False):
     policy.set_eps(eps)
     if log:
         logger.write("train/epsilon", epoch, {'Epsilon':eps})
+    if lr_scheduler is not None:
+        lr_scheduler.step()
+        if log:
+            logger.write("train/lr", step*batch_size, {'LR':lr_scheduler.get_last_lr()[0]})
 
 
 def run_DQN(opts, logger):
@@ -48,12 +52,14 @@ def run_DQN(opts, logger):
     ).to(opts.device)
 
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
-    learning_rate = 5e-4
+    learning_rate = 1e-3
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': learning_rate}
     ])
 
-    num_epochs = 100
+    lr_scheduler = ExponentialLR(optimizer, gamma=0.9997, verbose=False)
+
+    num_epochs = 500
     
     num_train_envs = 32 # has to be smaller or equal to episode_per_collect
     episode_per_collect = num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
@@ -62,7 +68,7 @@ def run_DQN(opts, logger):
     buffer_size = batch_size * 20
     
 
-    step_per_epoch = buffer_size * 100
+    step_per_epoch = batch_size * 100
 
     num_test_envs = 1024 # has to be smaller or equal to num_test_episodes
     num_test_episodes = 1024 # just collect this many episodes using policy and checks the performance
@@ -85,14 +91,17 @@ def run_DQN(opts, logger):
     result = ts.trainer.offpolicy_trainer( # DOESN'T work with PPO, which makes sense
         policy, train_collector, test_collector, num_epochs, step_per_epoch, step_per_collect,
         num_test_episodes, batch_size, update_per_step=1 / step_per_collect,
-        train_fn=lambda epoch, env_step: updatelog_eps(policy, eps_train/(epoch+1), logger, epoch, log=True),
-        test_fn=lambda epoch, env_step: updatelog_eps(policy, eps_train/(epoch+1), logger, epoch, log=False),
+        train_fn=lambda epoch, env_step: updatelog_eps_lr(policy, eps_train/(epoch+1), logger, epoch, lr_scheduler=lr_scheduler, step=env_step, batch_size=batch_size, log=True),
+        test_fn=lambda epoch, env_step: updatelog_eps_lr(policy, eps_train/(epoch+1), logger, epoch, log=False),
         #stop_fn=lambda mean_rewards: mean_rewards >= env.spec.reward_threshold,
         logger=logger
     )
 
+    torch.save(policy.state_dict(), f"policy_dir/{opts.run_name}.pth")
+    #policy.load_state_dict(torch.load("policy.pth"))
 
-def run_Reinforce(opts, logger):
+
+def run_PG(opts, logger):
     problem = load_problem(opts.problem)
     problem_env_class = { 'tsp': TSP_env, 'op': OP_env }
 
@@ -116,7 +125,7 @@ def run_Reinforce(opts, logger):
 
     lr_scheduler = ExponentialLR(optimizer, gamma=0.9997, verbose=False)
 
-    num_epochs = 200
+    num_epochs = 500
     
     num_train_envs = 32 # has to be smaller or equal to episode_per_collect
     episode_per_collect = num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
@@ -164,6 +173,8 @@ def run_Reinforce(opts, logger):
         logger=logger
     )
 
+    torch.save(policy.state_dict(), f"policy_dir/{opts.run_name}.pth")
+
 
 def run_PPO(opts, logger):
     problem = load_problem(opts.problem)
@@ -181,7 +192,7 @@ def run_PPO(opts, logger):
         tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
-    critic = V_Estimator(embedding_dim=16, problem=problem).to(opts.device)
+    critic = V_Estimator(embedding_dim=64, problem=problem).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     lr_actor = 1e-4
     lr_critic = 1e-5
@@ -192,7 +203,7 @@ def run_PPO(opts, logger):
 
     lr_scheduler = ExponentialLR(optimizer, gamma=0.9997, verbose=False)
 
-    num_epochs = 100
+    num_epochs = 500
     
     num_train_envs = 32 # has to be smaller or equal to episode_per_collect
     episode_per_collect = num_of_buffer = num_train_envs # they (num_of_buffer and num_train_envs) can't differ, or VectorReplayBuffer will introduce bad data to training
@@ -250,6 +261,8 @@ def run_PPO(opts, logger):
         train_fn=lambda epoch, env_step: logger.write("train/learning_rate", epoch, {'LR':lr_scheduler.get_last_lr()[0]})
     )
 
+    torch.save(policy.state_dict(), f"policy_dir/{opts.run_name}.pth")
+
 
 def run_SAC(opts, logger):
     problem = load_problem(opts.problem)
@@ -273,17 +286,17 @@ def run_SAC(opts, logger):
         {'params': actor.parameters(), 'lr': lr_actor}
     ])
 
-    critic1 = V_Estimator(embedding_dim=16, q_outputs=True, problem=problem).to(opts.device)
+    critic1 = V_Estimator(embedding_dim=64, q_outputs=True, problem=problem).to(opts.device)
     critic1_optimizer = optim.Adam([
         {'params': critic1.parameters(), 'lr': lr_critic1}
     ])
 
-    critic2 = V_Estimator(embedding_dim=16, q_outputs=True, problem=problem).to(opts.device)
+    critic2 = V_Estimator(embedding_dim=64, q_outputs=True, problem=problem).to(opts.device)
     critic2_optimizer = optim.Adam([
         {'params': critic2.parameters(), 'lr': lr_critic2}
     ])
 
-    num_epochs = 200
+    num_epochs = 500
     
     num_train_envs = 32 # has to be smaller or equal to episode_per_collect
     episode_per_collect = num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
@@ -340,6 +353,8 @@ def run_SAC(opts, logger):
         num_test_episodes, batch_size, update_per_step=1 / step_per_collect,
         logger=logger
     )
+
+    torch.save(policy.state_dict(), f"policy_dir/{opts.run_name}.pth")
 
 
 
@@ -420,17 +435,16 @@ def run_STE_argmax(opts):
             #print(loss)
         print(f'Epoch {epoch_idx} Costs: {epoch_costs/opts.epoch_size}')
 
-def manual_testing_OP(opts):
-    env = OP_env(opts)
+def manual_testing(opts):
+    problem_env_class = { 'tsp': TSP_env, 'op': OP_env }
+    env = problem_env_class[opts.problem](opts)
     obs = env.reset()
     done = False
 
-    print(obs)
+    print(f"{obs=}")
     while not done:
         obs, reward, done, info = env.step(int(input()))
-        print(obs)
-        print(reward)
-        print(done)
+        print(f"{obs=}, {reward=}, {done=}")
 
 
 def train(opts):
@@ -440,12 +454,12 @@ def train(opts):
 
     # Figure out what's the problem
     #run_STE_argmax(opts)
-    #run_DQN(opts, logger)
-    #run_Reinforce(opts, logger)
+    run_DQN(opts, logger)
+    #run_PG(opts, logger)
     #run_PPO(opts, logger)
-    run_SAC(opts, logger) # exploding losses problem? maybe check gradient clipping
+    #run_SAC(opts, logger) # exploding losses problem? maybe check gradient clipping
 
-    #manual_testing_OP(opts)
+    #manual_testing(opts)
     
 
 

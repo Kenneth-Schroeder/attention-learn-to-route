@@ -14,11 +14,11 @@ def get_options(args=None):
     parser.add_argument('--batch_size', type=int, default=16, help='Number of instances per batch during training')
     parser.add_argument('--epoch_size', type=int, default=32, help='Number of instances per epoch during training')
     parser.add_argument('--embedding_dim', type=int, default=128, help='Dimension of input embedding')
-    parser.add_argument('--hidden_dim', type=int, default=128, help='Dimension of hidden layers in Enc/Dec')
-    parser.add_argument('--n_encode_layers', type=int, default=3,
+    parser.add_argument('--hidden_dim', type=int, default=256, help='Dimension of hidden layers in Enc/Dec')
+    parser.add_argument('--n_encode_layers', type=int, default=5,
                         help='Number of layers in the encoder/critic network')
     parser.add_argument('--normalization', default='batch', help="Normalization type, 'batch' (default) or 'instance'")
-    parser.add_argument('--tanh_clipping', type=float, default=0,
+    parser.add_argument('--tanh_clipping', type=float, default=0.0,
                         help='Clip the parameters to within +- this value using tanh. '
                              'Set to 0 to not perform any clipping.')
 
@@ -27,7 +27,7 @@ def get_options(args=None):
     parser.add_argument('--lr_critic', type=float, default=1e-3, help="Set the learning rate for the critic network")
     parser.add_argument('--lr_decay', type=float, default=1.0, help='Learning rate decay per epoch')
     parser.add_argument('--n_epochs', type=int, default=100, help='The number of epochs to train')
-    parser.add_argument('--seed', type=int, default=1234, help='Random seed to use')
+    parser.add_argument('--seed', type=int, default=3456, help='Random seed to use')
     parser.add_argument('--data_distribution', type=str, default=None,
                         help='Data distribution to use during training, defaults and options depend on problem.')
 
