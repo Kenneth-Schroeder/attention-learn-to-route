@@ -52,7 +52,7 @@ class TSP_env(gym.Env):
     
     visited = self.batch_state.visited_.squeeze()
     assert(not visited[action].item()), "The node passed to the env's step function was already visited!"
-
+    
     masked_action = action
     if visited[masked_action].item():
       non_zero_idxs = (visited == 0).nonzero()

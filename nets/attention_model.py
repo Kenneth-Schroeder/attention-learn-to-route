@@ -114,8 +114,19 @@ class AttentionModel(nn.Module):
         embeddings, _ = self.embedder(self._init_embed(obs))
         return embeddings
 
-    # will only be used for STE as this will receive embeddings for first_a and prev_a instead of indices
     def decode(self, obs, embeddings, state=None):
+        logits, mask = self._inner(obs, embeddings)
+        
+        if self.output_probs:
+            probs = nn.functional.softmax(logits.squeeze(), dim=1)
+            return probs, state
+
+        logits = logits.view(obs['loc'].shape[0], -1)
+        
+        return logits, state # next hidden state
+
+    # will only be used for STE as this will receive embeddings for first_a and prev_a instead of indices
+    def decode_STE(self, obs, embeddings, state=None):
         logits, mask = self._inner_STE(obs, embeddings)
         batch_size = obs['loc'].shape[0]
         
@@ -135,16 +146,7 @@ class AttentionModel(nn.Module):
         :return:
         """
         embeddings = self.encode(obs, state, info)
-
-        logits, mask = self._inner(obs, embeddings)
-        
-        if self.output_probs:
-            probs = nn.functional.softmax(logits.squeeze(), dim=1)
-            return probs, state
-
-        logits = logits.view(obs['loc'].shape[0], -1)
-        
-        return logits, state # next hidden state
+        return self.decode(obs, embeddings, state)
 
 
 

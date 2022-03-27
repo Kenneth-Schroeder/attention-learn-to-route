@@ -1,3 +1,4 @@
 log_dir
 outputs
 policy_dir
+eval_logs

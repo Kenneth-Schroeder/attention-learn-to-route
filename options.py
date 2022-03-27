@@ -32,6 +32,7 @@ def get_options(args=None):
                         help='Data distribution to use during training, defaults and options depend on problem.')
 
     parser.add_argument('--run_name', default='run', help='Name to identify the run')
+    parser.add_argument('--save_name', help='Name to identify the saved run')
     parser.add_argument('--output_dir', default='outputs', help='Directory to write output models to')
 
     opts = parser.parse_args(args)
