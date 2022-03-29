@@ -141,7 +141,6 @@ class Normalization(nn.Module):
             param.data.uniform_(-stdv, stdv)
 
     def forward(self, input):
-
         if isinstance(self.normalizer, nn.BatchNorm1d):
             return self.normalizer(input.view(-1, input.size(-1))).view(*input.size())
         elif isinstance(self.normalizer, nn.InstanceNorm1d):

@@ -17,7 +17,7 @@ def get_options(args=None):
     parser.add_argument('--hidden_dim', type=int, default=256, help='Dimension of hidden layers in Enc/Dec')
     parser.add_argument('--n_encode_layers', type=int, default=5,
                         help='Number of layers in the encoder/critic network')
-    parser.add_argument('--normalization', default='batch', help="Normalization type, 'batch' (default) or 'instance'")
+    parser.add_argument('--normalization', default='instance', help="Normalization type, 'batch' or 'instance' (default)") # using instance normalization as default
     parser.add_argument('--tanh_clipping', type=float, default=0.0,
                         help='Clip the parameters to within +- this value using tanh. '
                              'Set to 0 to not perform any clipping.')
