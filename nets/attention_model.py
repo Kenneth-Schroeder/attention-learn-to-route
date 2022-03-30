@@ -122,7 +122,7 @@ class AttentionModel(nn.Module):
             return probs, state
 
         logits = logits.view(obs['loc'].shape[0], -1)
-        
+
         return logits, state # next hidden state
 
     # will only be used for STE as this will receive embeddings for first_a and prev_a instead of indices
@@ -330,7 +330,7 @@ class AttentionModel(nn.Module):
                             .expand(batch_size, num_steps, embeddings.size(-1))
                     ).view(batch_size, num_steps, embeddings.size(-1)),
                     (
-                        obs['remaining_length'][:, :, None]
+                        obs['remaining_length'][:, None, None]
                         if self.is_orienteering
                         else obs.get_remaining_prize_to_collect()[:, :, None]
                     )

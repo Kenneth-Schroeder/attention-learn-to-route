@@ -18,7 +18,7 @@ class V_Estimator(nn.Module):
                  problem,
                  q_outputs=False,
                  n_encode_layers=4,
-                 normalization='batch',
+                 normalization='instance',
                  n_heads=8):
         super(V_Estimator, self).__init__()
 
@@ -137,7 +137,7 @@ class V_Estimator(nn.Module):
         node_values = self.node_embed_to_value(embeddings).squeeze() # squeeze removes dimensions of size 1
 
         if self.q_outputs:
-            return node_values
+            return -node_values
         
         state_values = -torch.mean(node_values, dim=1)
         return state_values

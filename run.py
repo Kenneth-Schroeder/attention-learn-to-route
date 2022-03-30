@@ -8,12 +8,14 @@ import torch.optim as optim
 from options import get_options
 from nets.attention_model import AttentionModel
 from nets.v_estimator import V_Estimator
+from nets.v_estimator3 import V_Estimator3
 from utils import load_problem
 
 import tianshou as ts
-from problems.tsp.tsp_env import TSP_env
+#from problems.tsp.tsp_env import TSP_env
 from problems.tsp.tsp_env_optimized import TSP_env_optimized
-from problems.op.op_env import OP_env
+#from problems.op.op_env import OP_env
+from problems.op.op_env_optimized import OP_env_optimized
 from torch.utils.tensorboard import SummaryWriter
 from tianshou.utils import TensorboardLogger
 from torch.optim.lr_scheduler import ExponentialLR
@@ -24,6 +26,7 @@ import time
 import json
 
 from custom_classes.random import RandomPolicy
+from custom_classes.pg import PGPolicy_custom
 
 class Categorical_logits(torch.distributions.categorical.Categorical):
     def __init__(self, logits, validate_args=None):
@@ -42,7 +45,7 @@ def updatelog_eps_lr(policy, eps, logger, epoch, lr_scheduler=None, env_step=Non
 
 def run_DQN(opts, logger):
     problem = load_problem(opts.problem)
-    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env }
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized }
 
     actor = AttentionModel(
         opts.embedding_dim,
@@ -109,7 +112,7 @@ def run_DQN(opts, logger):
 
 def run_PG(opts, logger):
     problem = load_problem(opts.problem)
-    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env }
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized }
 
     actor = AttentionModel(
         opts.embedding_dim,
@@ -124,18 +127,18 @@ def run_PG(opts, logger):
     ).to(opts.device)
 
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
-    learning_rate = 1e-5 
+    learning_rate = 5e-5
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': learning_rate},
     ])
 
-    lr_scheduler = ExponentialLR(optimizer, gamma=0.99995, verbose=False)
+    lr_scheduler = ExponentialLR(optimizer, gamma=0.9999, verbose=False)
 
     num_epochs = 200
     
-    num_train_envs = 32 # has to be smaller or equal to episode_per_collect
+    num_train_envs = 64 # has to be smaller or equal to episode_per_collect
     num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
-    episode_per_collect = num_train_envs *16 #* 16
+    episode_per_collect = num_train_envs *8 #* 16
 
     batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
     buffer_size = batch_size # doesn't make a lot of sense to multiply here for onpolicy?
@@ -154,7 +157,7 @@ def run_PG(opts, logger):
         {step_per_epoch=}, {num_test_envs=}, {repeat_per_collect=}")
 
     distribution_type = Categorical_logits
-    policy = ts.policy.PGPolicy(model=actor,
+    policy = ts.policy.PGPolicy(model=actor, # PGPolicy_custom
                                 optim=optimizer,
                                 dist_fn=distribution_type,
                                 discount_factor=gamma,
@@ -185,7 +188,7 @@ def run_PG(opts, logger):
 
 def run_PPO(opts, logger):
     problem = load_problem(opts.problem)
-    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env }
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized }
 
     actor = AttentionModel(
         opts.embedding_dim,
@@ -273,7 +276,7 @@ def run_PPO(opts, logger):
 
 def run_SAC(opts, logger):
     problem = load_problem(opts.problem)
-    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env }
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized }
 
     actor = AttentionModel(
         opts.embedding_dim,
@@ -293,21 +296,22 @@ def run_SAC(opts, logger):
         {'params': actor.parameters(), 'lr': lr_actor}
     ])
 
-    critic1 = V_Estimator(embedding_dim=64, q_outputs=True, problem=problem).to(opts.device)
+    critic1 = V_Estimator3(embedding_dim=64, q_outputs=True, problem=problem).to(opts.device) # V_Estimator
     critic1_optimizer = optim.Adam([
         {'params': critic1.parameters(), 'lr': lr_critic1}
     ])
 
-    critic2 = V_Estimator(embedding_dim=64, q_outputs=True, problem=problem).to(opts.device)
+    critic2 = V_Estimator3(embedding_dim=64, q_outputs=True, problem=problem).to(opts.device)
     critic2_optimizer = optim.Adam([
         {'params': critic2.parameters(), 'lr': lr_critic2}
     ])
 
-    num_epochs = 500
+    num_epochs = 200
     
-    num_train_envs = 32 # has to be smaller or equal to episode_per_collect
-    episode_per_collect = num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
-    
+    num_train_envs = 64 # has to be smaller or equal to episode_per_collect
+    num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
+    episode_per_collect = num_train_envs *8 #* 16
+
     batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
     buffer_size = batch_size # doesn't make a lot of sense to multiply here for onpolicy?
 
@@ -324,12 +328,6 @@ def run_SAC(opts, logger):
 
     if alpha == None:
         dummy_env = problem_env_class[opts.problem](opts)
-        #test_vec = np.array([0.01, 0.81, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01])
-        #log_vec = np.log(test_vec)
-        #ent = np.sum(np.multiply(test_vec, log_vec))
-        #print(ent)
-        #print(dummy_env.action_space)
-        #print(-np.prod(dummy_env.action_space.shape))
         target_entropy = -np.prod(dummy_env.action_space.shape)
         log_alpha = torch.zeros(1, requires_grad=True, device=opts.device)
         alpha_optim = torch.optim.Adam([log_alpha], lr=3e-4)
@@ -366,7 +364,7 @@ def run_SAC(opts, logger):
 
 def run_A2C(opts, logger):
     problem = load_problem(opts.problem)
-    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env }
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized }
 
     actor = AttentionModel(
         opts.embedding_dim,
@@ -380,7 +378,7 @@ def run_A2C(opts, logger):
         tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
-    critic = V_Estimator(embedding_dim=32, problem=problem).to(opts.device)
+    critic = V_Estimator3(embedding_dim=64, problem=problem).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     lr_actor = 1e-4
     lr_critic = 5e-5
@@ -389,13 +387,13 @@ def run_A2C(opts, logger):
         {'params': critic.parameters(), 'lr': lr_critic}
     ])
 
-    lr_scheduler = ExponentialLR(optimizer, gamma=0.9997, verbose=False)
+    lr_scheduler = ExponentialLR(optimizer, gamma=0.9999, verbose=False)
 
-    num_epochs = 100
+    num_epochs = 200
     
-    num_train_envs = 512 # has to be smaller or equal to episode_per_collect
+    num_train_envs = 64 # has to be smaller or equal to episode_per_collect
     num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
-    episode_per_collect = num_train_envs #* 4
+    episode_per_collect = num_train_envs *8 #* 4
 
     batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
     buffer_size = batch_size # doesn't make a lot of sense to multiply here for onpolicy?
@@ -521,7 +519,7 @@ def run_STE_argmax(opts):
         print(f'Epoch {epoch_idx} Costs: {epoch_costs/opts.epoch_size}')
 
 def manual_testing(opts):
-    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env }
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized }
     env = problem_env_class[opts.problem](opts)
     obs = env.reset()
     done = False
@@ -537,7 +535,7 @@ def run_saved(opts, log_results=False):
     t0 = time.time()
 
     problem = load_problem(opts.problem)
-    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env } # _optimized
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized } # _optimized
 
     # NOTE: dims must be equivalent to save
     actor = AttentionModel(
@@ -632,17 +630,17 @@ def run_saved(opts, log_results=False):
 
 def random_run(opts):
     problem = load_problem(opts.problem)
-    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env } # _optimized
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized } # _optimized
 
     policy = RandomPolicy()
 
     num_train_envs = 32
     n_episodes = num_train_envs *400
 
-    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
-    train_collector = ts.data.Collector(policy, train_envs, exploration_noise=False)
+    envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
+    collector = ts.data.Collector(policy, envs, exploration_noise=False)
 
-    result = train_collector.collect(n_episode=n_episodes)
+    result = collector.collect(n_episode=n_episodes)
 
     print(n_episodes)
     print(result['rew'])
@@ -660,10 +658,10 @@ def train(opts):
     # Figure out what's the problem
     #run_STE_argmax(opts)
     #run_DQN(opts, logger)
-    run_PG(opts, logger)
+    #run_PG(opts, logger)
     #run_PPO(opts, logger)
     #run_SAC(opts, logger) # exploding losses problem? maybe check gradient clipping
-    #run_A2C(opts, logger)
+    run_A2C(opts, logger)
 
     #manual_testing(opts)
     #run_saved(opts, log_results=True)

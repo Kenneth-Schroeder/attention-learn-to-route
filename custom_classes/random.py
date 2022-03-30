@@ -28,7 +28,8 @@ class RandomPolicy(BasePolicy):
             Please refer to :meth:`~tianshou.policy.BasePolicy.forward` for
             more detailed explanation.
         """
-        mask = batch.obs['action_mask'].flatten().cpu() == 0
+        num_nodes = batch.obs['action_mask'].shape[-1]
+        mask = batch.obs['action_mask'].view(-1, num_nodes).cpu() == 0
         logits = np.random.rand(*mask.shape)
         logits[~mask] = -np.inf
         return Batch(act=logits.argmax(axis=-1))

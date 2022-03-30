@@ -49,7 +49,7 @@ class V_Estimator2(nn.Module):
                  tanh_clipping=10.,
                  mask_inner=False,
                  mask_logits=False,
-                 normalization='batch',
+                 normalization='instance',
                  n_heads=8):
         super(V_Estimator2, self).__init__()
 
