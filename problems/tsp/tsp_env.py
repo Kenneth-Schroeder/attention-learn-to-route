@@ -22,7 +22,6 @@ class TSP_env(gym.Env):
       'first_a': spaces.Discrete(num_nodes),
       'prev_a': spaces.Discrete(num_nodes),
       'visited': spaces.MultiBinary(num_nodes),
-      #'length': spaces.Box(low=0, high=np.inf, shape=(1,)),
       'action_mask': spaces.MultiBinary(num_nodes)
     }
 
@@ -38,17 +37,16 @@ class TSP_env(gym.Env):
     return {
       'loc': self.batch_state.loc.squeeze(),
       'dist': self.batch_state.dist.squeeze(),
-      'first_a': self.batch_state.first_a.squeeze(),#self.action_embeddings[0].squeeze() if len(self.action_embeddings) > 0 else self.batch_state.first_a.squeeze(),
-      'prev_a': self.batch_state.prev_a.squeeze(),#self.action_embeddings[-1].squeeze() if len(self.action_embeddings) > 0 else self.batch_state.prev_a.squeeze(),
+      'first_a': self.batch_state.first_a.squeeze(),
+      'prev_a': self.batch_state.prev_a.squeeze(),
       'visited': self.batch_state.visited_.squeeze(),
-      #'length': self.batch_state.lengths.squeeze(),
       'action_mask': self.batch_state.get_mask()
     }
 
 
-  def step(self, action):#, action_embedding):
+  def step(self, action):#, action_embedding): # extension for STE
     old_batch_state = self.batch_state
-    #self.action_embeddings.append(action_embedding)
+    #self.action_embeddings.append(action_embedding) # extension for STE
     
     visited = self.batch_state.visited_.squeeze()
     assert(not visited[action].item()), "The node passed to the env's step function was already visited!"

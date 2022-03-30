@@ -529,8 +529,6 @@ def manual_testing(opts):
         obs, reward, done, info = env.step(int(input()))
         print(f"{obs=}, {reward=}, {done=}")
 
-
-
 def run_saved(opts, log_results=False):
     t0 = time.time()
 
@@ -626,7 +624,6 @@ def run_saved(opts, log_results=False):
             json.dump(logs, fp)
 
     print(f"{total_rew=}, {np.mean(total_rew)/num_runs=}, {total_time=}")
-
 
 def random_run(opts):
     problem = load_problem(opts.problem)

@@ -137,8 +137,6 @@ class AttentionModel(nn.Module):
         return logits.view(batch_size, -1), state # next hidden state
 
 
-
-
     # regular forward function, combining encode and decode
     def forward(self, obs, state=None, info=None):
         """
@@ -147,8 +145,6 @@ class AttentionModel(nn.Module):
         """
         embeddings = self.encode(obs, state, info)
         return self.decode(obs, embeddings, state)
-
-
 
 
     def _init_embed(self, input):

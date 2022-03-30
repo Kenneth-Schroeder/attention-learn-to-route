@@ -32,17 +32,14 @@ class V_Estimator(nn.Module):
             node_dim = 6  # x, y, is_depot, visited, prev_a, remaining_len
         else:  # TSP
             assert problem.NAME == "tsp", "Unsupported problem: {}".format(problem.NAME)
-            node_dim = 5 # x, y, visited - yes/no, first_a, prev_a - one hot, dist min, max, mean
+            node_dim = 5 # x, y, visited - yes/no, first_a, prev_a (one hot); (possible extension) dist min, max, mean
         
         # usually node dim is constant w.r.t number of nodes. now if i include distances to all other nodes, that O(n)
         # just take multiple aggregations of the distances, like min, max and mean, which adds 3 dimensions - similar to GNN layers
-        # THATS ALL CUTE, BUT I DONT KNOW, WHICH NODE I AM CURRENTLY AT!!
-        # min werte sind useless, wenn der entsprechende neighbor already visited ist
-
+        # min aggregations e.g. are useless if the neighbor that provided the min value was already visited
 
         self.init_embed = nn.Linear(node_dim, embedding_dim)
 
-        # self.graph_embed_to_value = nn.Linear(embedding_dim, 1)
         self.node_embed_fc1 = nn.Linear(embedding_dim, embedding_dim)
         self.node_embed_fc2 = nn.Linear(embedding_dim, embedding_dim)
         self.node_embed_to_value = nn.Linear(embedding_dim, 1)
@@ -106,10 +103,7 @@ class V_Estimator(nn.Module):
             prev_a[mask] = replacement_prev_a
             first_a[mask] = replacement_first_a
 
-
-            # loc has shape: batch_size, #nodes, #coordinates
-            # dist_matrix should have shape: batch_size, #nodes, #nodes
-        
+            # possible extension to include aggregations of neighbors
             #distances = torch.cdist(loc, loc)
             #distances[distances==0] = torch.median(distances, dim=2).values.flatten()
 
@@ -117,20 +111,12 @@ class V_Estimator(nn.Module):
             #max_distances = torch.max(distances, dim=2).values.view(batch_size, -1, 1)
             #mean_distances = torch.mean(distances, dim=2).view(batch_size, -1, 1)
 
-            # see state_tsp.py ... visited_ = self.visited_.scatter(-1, prev_a[:, :, None], 1)
-            #action_one_hot = torch.zeros(batch_size, 1, n_loc, dtype=torch.uint8, device=loc.device)
-            #action_one_hot = action_one_hot.scatter(-1, batch_act[:, :, None], 1)
-            #action_one_hot = action_one_hot.view(batch_size, -1, 1)
-
             # concatenate all the prepared inputs
             my_input = torch.cat((loc, visited, first_a, prev_a), 2) # , min_distances, max_distances, mean_distances
 
 
         e = self._init_embed(my_input)
-        embeddings, _ = self.embedder(e) # EMBEDDER IS GRAPH ATTENTION ENCODER!
-
-        # graph_embed_mean = embeddings.mean(1)
-        # graph_embed_sum = embeddings.sum(1) # TODO use more aggregations and adjust Linear layer.
+        embeddings, _ = self.embedder(e) # embedder is a graph attention encoder
 
         embeddings = nn.functional.leaky_relu(self.node_embed_fc1(embeddings), negative_slope=0.2)
         embeddings = nn.functional.leaky_relu(self.node_embed_fc2(embeddings), negative_slope=0.2)
