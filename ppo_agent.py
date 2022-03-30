@@ -97,24 +97,6 @@ class PPO_Agent():
 			# final loss of clipped objective PPO
 			loss = -torch.min(surr1, surr2).mean() - self.entropy_factor*dist_entropy.mean()
 
-			# POSSIBLE PROBLEMS?!
-			# I am doing Monte Carlo but the gradients only flow through single steps
-			# planning the whole tour towards the last step is crucial as it might become the most expensive
-			# it would be best if the gradients would be connected all the way through the whole tour creation
-			# is this the case in standard attention solution?
-			# in my case here logprobs definitely comes from single transitions
-			# BUT monte carlo should help me realize here that easly decisions are already quite bad ... 
-			# this should be learnable quite well for the value estimator
-			# so my main issue is probably that the value estimator can't estimate properly
-			# can i visualize value estimator observations and decisions?
-
-			# why is prev_a not used in attention_model? i somehow need to include it when creating the context no?
-			# first_a is used, current_node is used instead of prev_a, but as index, right? maybe I can do this too?
-
-			# also I just edited prev_a and first_a to be array of -1 at the start. now i get errors
-			# check _get_parallel_step_context TSP part of attention_model again
-
-
 			critic_loss = self.MseLoss(state_values, rewards)
 			self.critic_optimizer.zero_grad()
 			critic_loss.backward()

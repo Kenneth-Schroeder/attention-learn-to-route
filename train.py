@@ -123,39 +123,6 @@ def train(model, optimizer, opts):
         #i_episode += 1
 
 
-        # NEXT STEPS
-        # make a agent class that contains the models, optimizers etc so that is doesnt float around everywhere like wtf
-        # make model work on single steps again
-        # check if costs calculation is still correct
-        # have fun
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
