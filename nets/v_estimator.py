@@ -30,9 +30,7 @@ class V_Estimator(nn.Module):
         node_dim = 5 # x, y, visited - yes/no, first_a, prev_a - one hot, dist min, max, mean
         # usually node dim is constant w.r.t number of nodes. now if i include distances to all other nodes, that O(n)
         # just take multiple aggregations of the distances, like min, max and mean, which adds 3 dimensions - similar to GNN layers
-        # THATS ALL CUTE, BUT I DONT KNOW, WHICH NODE I AM CURRENTLY AT!!
-        # min werte sind useless, wenn der entsprechende neighbor already visited ist
-
+        
         self.init_embed = nn.Linear(node_dim, embedding_dim)
 
         # self.graph_embed_to_value = nn.Linear(embedding_dim, 1)
