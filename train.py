@@ -136,8 +136,6 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
 
 # MARK: SAC Functions ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-# ReplayBuffer(size=9)
-# buf.add(obs=i, act=i, rew=i, done=i, obs_next=i + 1, info={})
 def train_epoch_sac(
     actor, # tianshou.policy.BasePolicy (s -> logits)
     actor_optim,
@@ -186,17 +184,6 @@ def train_epoch_sac(
             opts
         )
 
-        # NOTES OF MISTAKES:
-        # re-sampled actions for value optimization, but need to take those from replay buffer
-        # didnt set model.train() or decode type "sampling" after validating
-        # replay buffer was too small and only contained experience of almost solved problems
-        # state values were mostly positive - entropy was weighted too high, making agent random, ...
-        #   ... also q/v-estimator didn't have much possibilities to create negative numbers
-        #       changed ReLU in MultiHeadAttentionLayer to leakyReLY
-        # changed number of encode_layers in q/v-estimators
-        # learning rate decay was never called - currently only for actor!
-        # different learning rates for q/v-estimators than for actor used now!
-
         for i in range(40):
             discount = 1.0
             experience_batch_size = 512
@@ -217,12 +204,6 @@ def train_epoch_sac(
             )
 
         avg_reward = validate(actor, val_dataset, problem, opts)
-        
-        #random_reward = validate(Random_Model(), val_dataset, problem, opts)
-        #for bat in tqdm(DataLoader(val_dataset, batch_size=opts.eval_batch_size), disable=opts.no_progress_bar):
-        #    print(bat) 
-        #print(random_reward)
-        #assert(0==1)
         
         actor.train()
         set_decode_type(actor, "sampling")
@@ -270,7 +251,6 @@ def collect_experience_sac(
     x = move_to(x, opts.device)
 
     prev_state = problem.make_state(x)
-    #prev_state.loc = move_to(prev_state.loc, opts.device)
 
     j = 0
     while not prev_state.all_finished():
@@ -315,46 +295,11 @@ def train_batch_sac(
         experience_batch: Batch,
         opts
 ):
-    # tianshou issues
-    # sac_model.learn(experience_batch) # somehow cant deal with actual batches
-    # somehow tianshou expects only single elements in forward
-    # also wants logits as tuple for some reason
-    # also creates a distribution using this tuple, which probably fails because logits tuple has wrong format
-    # (is trying to unpack in the Normal constructor parameters)
 
     logits, _ = actor(experience_batch.obs)
     
     current_q1 = -critic1(experience_batch.obs)
     current_q2 = -critic2(experience_batch.obs)
-
-    # NEXT TODO
-    # my model should be able to deal with inputs of finished solutions/or finished solutions should never be put in!
-    # i need to recheck, how i calculate the "rewards" especially for final experiences -> need to add the path to start point
-    # maybe i can use the done bool from the replay buffer
-
-    # if i output logits, finished solutions should never make their way into my model!
-    # so i need to make sure, that either next_obs is never finished, or I circumvent using it here
-    # next_obs should be able to be finished solutions
-    # lets look at the done vector and see if it helps - should be helpful
-    # now i need to be able to select over the batch
-
-    # still lots of NANS in next_v?! CHECK THIS
-    # nans came from -inf * number
-    # i made sure that actor logits now are -inf for impossible actions as well (wasn't that the case already? wouldnt make sense otherwise)
-    # check above!
-    # next problem seems to be backpropagation in actor loss
-    # because we are trying to backprop for impossible actions as well ... (see actor loss computation below)
-
-    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-    # LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE - LOOK ABOVE
-
 
     #print(experience_batch.done.shape)
     masked_next_obs = StateTSP.from_obs_batch_masked(experience_batch.obs_next, ~experience_batch.done) # ~ is boolean inverse
@@ -377,15 +322,6 @@ def train_batch_sac(
     next_v[~experience_batch.done] = torch.minimum(expected_next_v1, expected_next_v2)
     # print(next_v)
 
-    # current_v = value_model(experience_batch.obs).flatten()
-    # next_v = value_model(experience_batch.obs_next).flatten()
-    # print(next_v) # viel positiv :O - vermutlich wegen hohem entropy faktor - wird deshalb random?
-    # note: i currently can't backpropagate to value network parameters !!! how do i do this?
-    # wait i do ! i calculate difference in loss lol
-
-    # still viel POSITIV! - wie kann das sein? loss ist bei q-values und values gar nicht so schlecht ...
-    # die konnten nicht so gut negative werte lernen
-
     current_act_q1 = current_q1.gather(1, experience_batch.act)
     current_act_q2 = current_q2.gather(1, experience_batch.act)
     act_logits = logits.gather(1, experience_batch.act)
@@ -406,22 +342,6 @@ def train_batch_sac(
     # actor loss computation
     soft_q1 = softy(current_q1.detach()) + 1e-6
     soft_actor = softy(logits) + 1e-6 # prevent nan when calculating log below
-
-
-
-    # TODO CHECK IF DETACH HELPS HERE IN NEXT LINE WITH EXPERIENCE_BATCH
-    # in model, setting visited nodes logits to -inf is an inplace operation, which backpropagation doesn't like!
-    # why does it work in q_estimator? - we dont put them into softmax afterwards/or use detach...
-    # change in one logit effects all other logits when applying softmax!
-
-
-    # I am somewhat better than random with entropy factor 0, however, q-estimators seem to perform quite bad...
-    # maybe the q_estimators architecture is really bad for finding the distances... 
-    # -> I could just calculate the distances beforehand and input them to the estimator
-    # as one vector for the current action -> new dimension
-    # but why works their setup with reinforce? - they dont need to learn the q-values,
-    # they basically only need to learn the intuition/the policy
-
 
     p_div_q = torch.div(soft_actor[~experience_batch.done], soft_q1[~experience_batch.done])
     log_p_div_q = torch.log(p_div_q)
@@ -461,14 +381,6 @@ def train_batch(
         tb_logger,
         opts
 ):
-    # TODO
-    # sample batch from Replay Buffer and feed it into this function
-    # adjust model(x) to work on batches of individual items from the replay buffer
-    #   (only predict one step, then update models, add new experience to RB)
-    #   Note: the decoder needs all of the input embeddings, this is quite inefficient, as we run per sample (maybe save it in the experience)
-    # introduce Q and state value estimator and learn policy using KL divergence -> this can be done using tianshou SAC, right?
-    #   the estimators will need some form of masking, might be hard to introduce
-    # 
 
     x, bl_val = baseline.unwrap_batch(batch)
     print("---------") 

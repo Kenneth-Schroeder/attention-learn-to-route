@@ -129,15 +129,6 @@ def run(opts):
         )
     )
 
-    # Load optimizer state
-    #if 'optimizer' in load_data:
-    #    optimizer.load_state_dict(load_data['optimizer'])
-    #    for state in optimizer.state.values():
-    #        for k, v in state.items():
-    #            # if isinstance(v, torch.Tensor):
-    #            if torch.is_tensor(v):
-    #                state[k] = v.to(opts.device)
-
     # Initialize learning rate scheduler, decay by lr_decay once per epoch!
     lr_scheduler = optim.lr_scheduler.LambdaLR(actor_optimizer, lambda epoch: opts.lr_decay ** epoch)
 
@@ -150,58 +141,6 @@ def run(opts):
     c1_optimizer = optim.Adam(c1.parameters(), lr=opts.lr_critic) # TODO maybe use a different learning rate for critics
     c2_optimizer = optim.Adam(c2.parameters(), lr=opts.lr_critic)
     v_optimizer = optim.Adam(v.parameters(), lr=opts.lr_critic)
-
-
-    #:param torch.nn.Module actor: the actor network following the rules in
-    #    :class:`~tianshou.policy.BasePolicy`. (s -> logits)
-    #:param torch.optim.Optimizer actor_optim: the optimizer for actor network.
-    #:param torch.nn.Module critic1: the first critic network. (s, a -> Q(s, a))
-    #:param torch.optim.Optimizer critic1_optim: the optimizer for the first
-    #    critic network.
-    #:param torch.nn.Module critic2: the second critic network. (s, a -> Q(s, a))
-    #:param torch.optim.Optimizer critic2_optim: the optimizer for the second
-    #    critic network.
-    #:param float tau: param for soft update of the target network. Default to 0.005.
-    #:param float gamma: discount factor, in [0, 1]. Default to 0.99.
-    #:param (float, torch.Tensor, torch.optim.Optimizer) or float alpha: entropy
-    #    regularization coefficient. Default to 0.2.
-    #    If a tuple (target_entropy, log_alpha, alpha_optim) is provided, then
-    #    alpha is automatically tuned.
-    #:param bool reward_normalization: normalize the reward to Normal(0, 1).
-    #    Default to False.
-    #:param BaseNoise exploration_noise: add a noise to action for exploration.
-    #    Default to None. This is useful when solving hard-exploration problem.
-    #:param bool deterministic_eval: whether to use deterministic action (mean
-    #    of Gaussian policy) instead of stochastic action sampled by the policy.
-    #    Default to True.
-    #:param bool action_scaling: whether to map actions from range [-1, 1] to range
-    #    [action_spaces.low, action_spaces.high]. Default to True.
-    #:param str action_bound_method: method to bound action to range [-1, 1], can be
-    #    either "clip" (for simply clipping the action) or empty string for no bounding.
-    #    Default to "clip".
-    #:param Optional[gym.Space] action_space: env's action space, mandatory if you want
-    #    to use option "action_scaling" or "action_bound_method". Default to None.
-
-
-
-
-    #sac_model = SACPolicy(actor=model, # tianshou.policy.BasePolicy (s -> logits)
-    #                      actor_optim=actor_optimizer,
-    #                      critic1=c1, # (s, a -> Q(s, a))
-    #                      critic1_optim=c1_optimizer,
-    #                      critic2=c2, # (s, a -> Q(s, a))
-    #                      critic2_optim=c2_optimizer,
-    #                      # tau: float = 0.005,
-    #                      gamma=1.00, # default float = 0.99,
-    #                      # alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2, # entropy coefficient
-    #                      # reward_normalization: bool = False,
-    #                      # estimation_step: int = 1,
-    #                      # exploration_noise: Optional[BaseNoise] = None, # todo check if useful
-    #                      # deterministic_eval: bool = True,
-    #                      # **kwargs: Any,
-    #            )
-
-
 
 
     # Start the actual training loop
