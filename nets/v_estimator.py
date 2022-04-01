@@ -16,16 +16,23 @@ class V_Estimator(nn.Module):
     def __init__(self,
                  embedding_dim,
                  problem,
+                 activation_str='leaky',
+                 invert_visited=False,
+                 negate_outputs=True,
                  q_outputs=False,
-                 n_encode_layers=4,
+                 n_encode_layers=5,
                  normalization='instance',
                  n_heads=8):
         super(V_Estimator, self).__init__()
+
+        self.activation_function = { 'leaky': torch.nn.LeakyReLU(negative_slope=0.2), 'relu': torch.nn.ReLU() }[activation_str]
+        self.invert_visited = invert_visited
 
         self.embedding_dim = embedding_dim
         self.n_encode_layers = n_encode_layers
         self.n_heads = n_heads
         self.q_outputs = q_outputs
+        self.negate_outputs = negate_outputs
 
         self.is_orienteering = problem.NAME == 'op'
         if self.is_orienteering:
@@ -60,6 +67,8 @@ class V_Estimator(nn.Module):
 
             # transform visited tensor into the correct format
             visited = obs['visited'].view(batch_size, -1, 1).to(device=loc.device)
+            if self.invert_visited:
+                visited = torch.logical_not(visited)
 
             # get the values (= city indices) of last action
             prev_a_idx = obs['prev_a'].view(batch_size, -1)
@@ -79,6 +88,8 @@ class V_Estimator(nn.Module):
 
             # transform visited tensor into the correct format
             visited = obs['visited'].view(batch_size, -1, 1).to(device=loc.device)
+            if self.invert_visited:
+                visited = torch.logical_not(visited)
             # get the values (= city indices) of important actions
             prev_a_idx = obs['prev_a'].view(batch_size, -1)
             first_a_idx = obs['first_a'].view(batch_size, -1)
@@ -118,14 +129,14 @@ class V_Estimator(nn.Module):
         e = self._init_embed(my_input)
         embeddings, _ = self.embedder(e) # embedder is a graph attention encoder
 
-        embeddings = nn.functional.leaky_relu(self.node_embed_fc1(embeddings), negative_slope=0.2)
-        embeddings = nn.functional.leaky_relu(self.node_embed_fc2(embeddings), negative_slope=0.2)
+        embeddings = self.activation_function(self.node_embed_fc1(embeddings))
+        embeddings = self.activation_function(self.node_embed_fc2(embeddings))
         node_values = self.node_embed_to_value(embeddings).squeeze() # squeeze removes dimensions of size 1
 
         if self.q_outputs:
-            return -node_values
+            return node_values * (-1 if self.negate_outputs else 1)
         
-        state_values = -torch.mean(node_values, dim=1)
+        state_values = torch.mean(node_values, dim=1) * (-1 if self.negate_outputs else 1)
         return state_values
        
 

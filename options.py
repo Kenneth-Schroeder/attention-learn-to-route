@@ -71,12 +71,18 @@ def get_options(args=None):
     parser.add_argument('--n_epochs', type=int, default=100, help='The number of epochs to train')
     parser.add_argument('--seed', type=int, default=None, help='Random seed to use')
     parser.add_argument('--data_distribution', type=str, default=None,
-                        help='Data distribution of the OP per-node rewards, defaults to dist.')
+                        help='Data distribution of the OP per-node rewards, defaults to dist')
+
+    parser.add_argument('--negate_critics_output', type=bool, default=True, help='If critics outputs should be negated so let them learn positive values')
+    parser.add_argument('--v1critic_activation', type=str, default='leaky', help='Which activation functions to use in critics')
+    parser.add_argument('--v1critic_inv_visited', type=bool, default=False, help='Whether to pass visited=1 or unvisited=1 values to critics')
+    parser.add_argument('--max_grad_norm', type=float, default=None, help='Whether to use gradient clipping')
+    parser.add_argument('--neg_PG', type=bool, default=False, help='Whether to use custom PGPolicy for strictly negative rewards')
 
     parser.add_argument('--run_name', default='run', help='Name to identify the run')
 
     parser.add_argument('--args_from_csv', type=str, default=None, help='Extract arguments from csv.')
-    parser.add_argument('--csv_row', type=int, default=1, help='Extract arguments from csv at specified row.')
+    parser.add_argument('--csv_row', type=int, default=0, help='Extract arguments from csv at specified row.')
     
     opts = parser.parse_args(args)
 
@@ -84,7 +90,7 @@ def get_options(args=None):
         args = []
         with open(path) as f:
             arg_names = next(itertools.islice(csv.reader(f), 0, None)) # uses line 0 for arg names
-            arg_values = next(itertools.islice(csv.reader(f), line_number, None))
+            arg_values = next(itertools.islice(csv.reader(f), line_number, None)) # which line after header to use as values
             for name, value in zip(arg_names, arg_values):
                 if value != '': # will use default value if csv cell empty
                     args.append(f"--{name}")

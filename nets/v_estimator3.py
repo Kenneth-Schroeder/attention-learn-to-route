@@ -38,10 +38,13 @@ class V_Estimator3(nn.Module):
     def __init__(self,
                  embedding_dim,
                  problem,
+                 activation_str='leaky', # not used in this V_Estimator, just for interface compatibility
+                 invert_visited=False, # not used in this V_Estimator, just for interface compatibility
+                 negate_outputs=True,
                  hidden_dim=128,
                  q_outputs=False,
                  output_probs=False,
-                 n_encode_layers=3,
+                 n_encode_layers=5,
                  tanh_clipping=10.,
                  mask_inner=False,
                  mask_logits=False,
@@ -50,6 +53,7 @@ class V_Estimator3(nn.Module):
         super(V_Estimator3, self).__init__()
 
         self.q_outputs = q_outputs
+        self.negate_outputs = negate_outputs
 
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
@@ -127,9 +131,9 @@ class V_Estimator3(nn.Module):
         logits = logits.view(obs['loc'].shape[0], -1)
 
         if self.q_outputs:
-            return -logits # Q-values
+            return logits * (-1 if self.negate_outputs else 1) # Q-values
         
-        return -torch.mean(logits, dim=1) # state value
+        return torch.mean(logits, dim=1) * (-1 if self.negate_outputs else 1)# state value
 
 
 

@@ -157,7 +157,7 @@ def run_PG(opts, logger):
     gamma = opts.gamma # 1.00
     repeat_per_collect = opts.repeat_per_collect # how many times to learn each batch
     # custom PG loss # skipped, see run from 30th March, ~10:30am
-
+    Policy_class = PGPolicy_custom if opts.neg_PG else ts.policy.PGPolicy
 
 
     num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
@@ -187,13 +187,13 @@ def run_PG(opts, logger):
     test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
 
     distribution_type = Categorical_logits
-    policy = ts.policy.PGPolicy(model=actor, # PGPolicy_custom ts.policy.PGPolicy
-                                optim=optimizer,
-                                dist_fn=distribution_type,
-                                discount_factor=gamma,
-                                lr_scheduler=lr_scheduler if decay_learning_rate else None, # updates LR each policy update => with each batch 0.9997^(batches_per_epoch*epoch)
-                                reward_normalization=False,
-                                deterministic_eval=False)
+    policy = Policy_class(model=actor,
+                          optim=optimizer,
+                          dist_fn=distribution_type,
+                          discount_factor=gamma,
+                          lr_scheduler=lr_scheduler if decay_learning_rate else None, # updates LR each policy update => with each batch 0.9997^(batches_per_epoch*epoch)
+                          reward_normalization=False,
+                          deterministic_eval=False)
 
     replay_buffer = ts.data.VectorReplayBuffer(total_size=buffer_size, buffer_num=num_of_buffer)
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
@@ -267,7 +267,7 @@ def run_PPO(opts, logger):
 
 
 
-    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem).to(opts.device)
+    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     
     optimizer = optim.Adam([
@@ -299,7 +299,8 @@ def run_PPO(opts, logger):
                                  ent_coef=ent_coef,
                                  gae_lambda=gae_lambda,
                                  reward_normalization=False,
-                                 deterministic_eval=False)
+                                 deterministic_eval=False,
+                                 max_grad_norm=opts.max_grad_norm)
 
     replay_buffer = ts.data.VectorReplayBuffer(total_size=buffer_size, buffer_num=num_of_buffer)
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
@@ -379,12 +380,12 @@ def run_SAC(opts, logger):
         {'params': actor.parameters(), 'lr': lr_actor}
     ])
 
-    critic1 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem).to(opts.device) # V_Estimator
+    critic1 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device) # V_Estimator
     critic1_optimizer = optim.Adam([
         {'params': critic1.parameters(), 'lr': lr_critic1}
     ])
 
-    critic2 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem).to(opts.device)
+    critic2 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
     critic2_optimizer = optim.Adam([
         {'params': critic2.parameters(), 'lr': lr_critic2}
     ])
@@ -476,7 +477,7 @@ def run_A2C(opts, logger):
 
 
 
-    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem).to(opts.device)
+    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': lr_actor},
@@ -501,8 +502,8 @@ def run_A2C(opts, logger):
                                  lr_scheduler=lr_scheduler if decay_learning_rate else None,
                                  vf_coef=vf_coef,
                                  ent_coef=ent_coef,
-                                 gae_lambda=gae_lambda
-                                 )
+                                 gae_lambda=gae_lambda,
+                                 max_grad_norm=opts.max_grad_norm)
 
     replay_buffer = ts.data.VectorReplayBuffer(total_size=buffer_size, buffer_num=num_of_buffer)
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
