@@ -18,7 +18,7 @@ from problems.tsp.tsp_env_optimized import TSP_env_optimized
 from problems.op.op_env_optimized import OP_env_optimized
 from torch.utils.tensorboard import SummaryWriter
 from tianshou.utils import TensorboardLogger
-from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.lr_scheduler import ExponentialLR, CyclicLR
 
 import numpy as np
 from nets.argmaxembed import ArgMaxEmbed
@@ -33,12 +33,14 @@ class Categorical_logits(torch.distributions.categorical.Categorical):
         super(Categorical_logits, self).__init__(logits=logits, validate_args=validate_args)
 
 
-def updatelog_eps_lr(policy, eps, logger, epoch, lr_scheduler=None, env_step=None, batch_size=None, log=False):
-    policy.set_eps(eps)
+def updatelog_eps_lr(decay_learning_rate, decay_epsilon, policy, eps, logger, epoch, lr_scheduler=None, env_step=None, batch_size=None, log=False):
+    if decay_epsilon:
+        policy.set_eps(eps)
     if log:
         logger.write("train/epsilon", epoch, {'Epsilon':eps})
     if lr_scheduler is not None:
-        lr_scheduler.step()
+        if decay_learning_rate:
+            lr_scheduler.step()
         if log:
             logger.write("train/lr", env_step, {'LR':lr_scheduler.get_last_lr()[0]})
 
@@ -60,38 +62,53 @@ def run_DQN(opts, logger):
     ).to(opts.device)
 
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
-    learning_rate = 5e-4
+
+    learning_rate = opts.lr_actor # 5e-4 
+    learning_rate_decay = opts.lr_decay # 0.99995
+    lr_scheduler_type = opts.lr_scheduler_type
+    decay_learning_rate = opts.decay_lr # False
+    decay_epsilon = opts.decay_eps # False
+    num_epochs = opts.n_epochs # 100
+    num_train_envs = opts.n_train_envs # 32 # has to be smaller or equal to episode_per_collect
+    episode_per_collect_factor = opts.epc_factor # 1
+    buffer_size_factor = opts.bs_factor # 20
+    epoch_size_factor = opts.es_factor # 100
+    num_test_envs = opts.n_test_envs # 1024 # has to be smaller or equal to num_test_episodes
+    test_episodes_factor = opts.te_factor # 1
+    gamma, n_step, target_freq = opts.gamma, opts.n_step, opts.target_freq # 1.00, 1, 100
+    eps_train, eps_test = opts.eps_train, opts.eps_test # 0.5, 0.2
+    # PER
+
+    num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
+    episode_per_collect = num_train_envs * episode_per_collect_factor
+
+    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    buffer_size = batch_size * buffer_size_factor
+
+    step_per_epoch = batch_size * epoch_size_factor
+
+    num_test_episodes = num_test_envs * test_episodes_factor # just collect this many episodes using policy and checks the performance
+    step_per_collect = batch_size
+
+
+
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': learning_rate}
     ])
+    lr_scheduler_options = { 
+        'exp': ExponentialLR(optimizer, gamma=learning_rate_decay, verbose=False),
+        'cyclic': CyclicLR(optimizer, opts.cyc_base_lr, opts.cyc_max_lr, step_size_up=opts.cyc_step_size_up, step_size_down=opts.cyc_step_size_down, mode='triangular2', cycle_momentum=False)
+    }
+    lr_scheduler = lr_scheduler_options[opts.lr_scheduler_type]
 
-    lr_scheduler = ExponentialLR(optimizer, gamma=0.99995, verbose=False)
-
-    num_epochs = 100
     
-    num_train_envs = 32 # has to be smaller or equal to episode_per_collect
-    num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
-    episode_per_collect = num_train_envs #* 4
-
-    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
-    buffer_size = batch_size * 20
-    
-
-    step_per_epoch = batch_size * 100
-
-    num_test_envs = 1024 # has to be smaller or equal to num_test_episodes
-    num_test_episodes = 1024 # just collect this many episodes using policy and checks the performance
-    step_per_collect = batch_size
     # SubprocVectorEnv DummyVectorEnv
     train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
     test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
 
-    gamma, n_step, target_freq = 1.00, 1, 100
     policy = ts.policy.DQNPolicy(actor, optimizer, gamma, n_step, target_update_freq=target_freq)
-    eps_train, eps_test = 0.5, 0.2
-
-    logger.writer.add_text("hyperparameters", f"{learning_rate=}, {episode_per_collect=}, {batch_size=}, \
-        {step_per_epoch=}, {num_test_envs=}, {n_step=}, {target_freq=}, {eps_train=}, {eps_test=}")
+    
+    
 
     replay_buffer = ts.data.VectorReplayBuffer(total_size=buffer_size, buffer_num=num_of_buffer)
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
@@ -100,8 +117,8 @@ def run_DQN(opts, logger):
     result = ts.trainer.offpolicy_trainer( # DOESN'T work with PPO, which makes sense
         policy, train_collector, test_collector, num_epochs, step_per_epoch, step_per_collect,
         num_test_episodes, batch_size, update_per_step=1 / step_per_collect,
-        train_fn=lambda epoch, env_step: updatelog_eps_lr(policy, eps_train/(epoch+1), logger, epoch, lr_scheduler=lr_scheduler, env_step=env_step, batch_size=batch_size, log=True),
-        test_fn=lambda epoch, env_step: updatelog_eps_lr(policy, eps_train/(epoch+1), logger, epoch, log=False),
+        train_fn=lambda epoch, env_step: updatelog_eps_lr(decay_learning_rate, decay_epsilon, policy, eps_train/(epoch+1), logger, epoch, lr_scheduler=lr_scheduler, env_step=env_step, batch_size=batch_size, log=True),
+        test_fn=lambda epoch, env_step: updatelog_eps_lr(decay_learning_rate, decay_epsilon, policy, eps_test/(epoch+1), logger, epoch, log=False),
         #stop_fn=lambda mean_rewards: mean_rewards >= env.spec.reward_threshold,
         logger=logger
     )
@@ -127,41 +144,54 @@ def run_PG(opts, logger):
     ).to(opts.device)
 
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
-    learning_rate = 5e-5
+    learning_rate = opts.lr_actor # 5e-5 worked well
+    learning_rate_decay = opts.lr_decay # 0.9999
+    lr_scheduler_type = opts.lr_scheduler_type
+    decay_learning_rate = opts.decay_lr # False
+    num_epochs = opts.n_epochs # 100
+    num_train_envs = opts.n_train_envs # 32 # has to be smaller or equal to episode_per_collect
+    episode_per_collect_factor = opts.epc_factor # 1
+    epoch_size_factor = opts.es_factor # 100
+    num_test_envs = opts.n_test_envs # 1024 # has to be smaller or equal to num_test_episodes
+    test_episodes_factor = opts.te_factor # 1
+    gamma = opts.gamma # 1.00
+    repeat_per_collect = opts.repeat_per_collect # how many times to learn each batch
+    # custom PG loss # skipped, see run from 30th March, ~10:30am
+
+
+
+    num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
+    episode_per_collect = num_train_envs * episode_per_collect_factor
+
+    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    buffer_size = batch_size # no buffer_size_factor for onpolicy algorithms as buffer will be cleared after each network update
+
+    step_per_epoch = batch_size * epoch_size_factor
+
+    num_test_episodes = num_test_envs * test_episodes_factor # just collect this many episodes using policy and checks the performance
+    step_per_collect = batch_size
+
+
+
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': learning_rate},
     ])
+    lr_scheduler_options = { 
+        'exp': ExponentialLR(optimizer, gamma=learning_rate_decay, verbose=False),
+        'cyclic': CyclicLR(optimizer, opts.cyc_base_lr, opts.cyc_max_lr, step_size_up=opts.cyc_step_size_up, step_size_down=opts.cyc_step_size_down, mode='triangular2', cycle_momentum=False)
+    }
+    lr_scheduler = lr_scheduler_options[opts.lr_scheduler_type]
 
-    lr_scheduler = ExponentialLR(optimizer, gamma=0.9999, verbose=False)
-
-    num_epochs = 200
-    
-    num_train_envs = 64 # has to be smaller or equal to episode_per_collect
-    num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
-    episode_per_collect = num_train_envs *8 #* 16
-
-    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
-    buffer_size = batch_size # doesn't make a lot of sense to multiply here for onpolicy?
-    
-    repeat_per_collect = 1 # how many times to learn each batch
-    step_per_epoch = batch_size * 100
-
-    num_test_envs = 1024 # has to be smaller or equal to num_test_episodes
-    num_test_episodes = 1024 # just collect this many episodes using policy and checks the performance
     # SubprocVectorEnv DummyVectorEnv
     train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
     test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
-    gamma = 1.00
-
-    logger.writer.add_text("hyperparameters", f"{learning_rate=}, {episode_per_collect=}, {batch_size=}, \
-        {step_per_epoch=}, {num_test_envs=}, {repeat_per_collect=}")
 
     distribution_type = Categorical_logits
-    policy = ts.policy.PGPolicy(model=actor, # PGPolicy_custom
+    policy = ts.policy.PGPolicy(model=actor, # PGPolicy_custom ts.policy.PGPolicy
                                 optim=optimizer,
                                 dist_fn=distribution_type,
                                 discount_factor=gamma,
-                                lr_scheduler=lr_scheduler, # updates LR each policy update => with each batch 0.9997^(batches_per_epoch*epoch)
+                                lr_scheduler=lr_scheduler if decay_learning_rate else None, # updates LR each policy update => with each batch 0.9997^(batches_per_epoch*epoch)
                                 reward_normalization=False,
                                 deterministic_eval=False)
 
@@ -202,39 +232,57 @@ def run_PPO(opts, logger):
         tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
-    critic = V_Estimator(embedding_dim=64, problem=problem).to(opts.device)
+    lr_actor = opts.lr_actor # 1e-4
+    lr_critic = opts.lr_critic1 # 1e-4
+    learning_rate_decay = opts.lr_decay # 0.9999
+    lr_scheduler_type = opts.lr_scheduler_type
+    decay_learning_rate = opts.decay_lr # False
+    num_epochs = opts.n_epochs # 100
+    num_train_envs = opts.n_train_envs # 32 # has to be smaller or equal to episode_per_collect
+    episode_per_collect_factor = opts.epc_factor # 1
+    epoch_size_factor = opts.es_factor # 100
+    num_test_envs = opts.n_test_envs # 1024 # has to be smaller or equal to num_test_episodes
+    test_episodes_factor = opts.te_factor # 1
+    gamma = opts.gamma # 1.00
+    repeat_per_collect = opts.repeat_per_collect # how many times to learn each batch
+    critics_embedding_dim = opts.critics_embedding_dim
+    eps_clip, vf_coef, ent_coef, gae_lambda = opts.eps_clip, opts.vf_coef, opts.ent_coef, opts.gae_lambda
+    critic_class_str = opts.critic_class_str
+    critics_class = { 'v1': V_Estimator, 'v3': V_Estimator3 } # critics_class[critic_class_str]
+
+
+
+    num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
+    episode_per_collect = num_train_envs * episode_per_collect_factor
+
+    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    buffer_size = batch_size # no buffer_size_factor for onpolicy algorithms as buffer will be cleared after each network update
+
+    step_per_epoch = batch_size * epoch_size_factor
+
+    num_test_episodes = num_test_envs * test_episodes_factor # just collect this many episodes using policy and checks the performance
+    step_per_collect = batch_size
+
+
+
+
+
+    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
-    lr_actor = 1e-4
-    lr_critic = 1e-5
+    
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': lr_actor},
         {'params': critic.parameters(), 'lr': lr_critic}
     ])
-
-    lr_scheduler = ExponentialLR(optimizer, gamma=0.9997, verbose=False)
-
-    num_epochs = 500
-    
-    num_train_envs = 32 # has to be smaller or equal to episode_per_collect
-    episode_per_collect = num_of_buffer = num_train_envs # they (num_of_buffer and num_train_envs) can't differ, or VectorReplayBuffer will introduce bad data to training
-    
-    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
-    buffer_size = batch_size # doesn't make a lot of sense to multiply here for onpolicy?
-
-    repeat_per_collect = 1 
-    step_per_epoch = buffer_size * 100
-
-    num_test_envs = 1024 # has to be smaller or equal to num_test_episodes
-    num_test_episodes = 1024 # just collect this many episodes using policy and checks the performance
+    lr_scheduler_options = { 
+        'exp': ExponentialLR(optimizer, gamma=learning_rate_decay, verbose=False),
+        'cyclic': CyclicLR(optimizer, opts.cyc_base_lr, opts.cyc_max_lr, step_size_up=opts.cyc_step_size_up, step_size_down=opts.cyc_step_size_down, mode='triangular2', cycle_momentum=False)
+    }
+    lr_scheduler = lr_scheduler_options[opts.lr_scheduler_type]
 
     train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
     test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
-    gamma = 1.00
-
-    eps_clip, vf_coef, ent_coef, gae_lambda = 0.2, 0.5, 0.01, 1.00
-
-    logger.writer.add_text("hyperparameters", f"{lr_actor=}, {lr_critic=}, {episode_per_collect=}, {batch_size=}, \
-        {step_per_epoch=}, {num_test_envs=}, {repeat_per_collect=}, {eps_clip=}, {vf_coef=}, {ent_coef=}, {gae_lambda=}")
+    
 
     distribution_type = Categorical_logits
     policy = ts.policy.PPOPolicy(actor=actor,
@@ -242,7 +290,7 @@ def run_PPO(opts, logger):
                                  optim=optimizer,
                                  dist_fn=distribution_type,
                                  discount_factor=gamma,
-                                 lr_scheduler=lr_scheduler,
+                                 lr_scheduler=lr_scheduler if decay_learning_rate else None,
                                  eps_clip=eps_clip,
                                  dual_clip=None,
                                  value_clip=False,
@@ -290,51 +338,66 @@ def run_SAC(opts, logger):
         tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
+    lr_actor = opts.lr_actor # 1e-4
+    lr_critic1 = opts.lr_critic1 # 1e-5
+    lr_critic2 = opts.lr_critic2 # 1e-5
+
+    num_epochs = opts.n_epochs # 200
+    num_train_envs = opts.n_train_envs # 32 # has to be smaller or equal to episode_per_collect
+    episode_per_collect_factor = opts.epc_factor # 1
+    buffer_size_factor = opts.bs_factor # 1
+    epoch_size_factor = opts.es_factor # 100
+    num_test_envs = opts.n_test_envs # 1024 # has to be smaller or equal to num_test_episodes
+    test_episodes_factor = opts.te_factor # 1
+    gamma = opts.gamma # 1.00
+    critics_embedding_dim = opts.critics_embedding_dim
+    critic_class_str = opts.critic_class_str
+    critics_class = { 'v1': V_Estimator, 'v3': V_Estimator3 } # critics_class[critic_class_str]
+
+    tau, alpha = opts.tau, opts.alpha_ent # 0.005, None
+    target_ent = opts.target_ent # default = -np.prod(dummy_env.action_space.shape)
+    lr_alpha_ent = opts.lr_alpha_ent
+    
+
+
+    num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
+    episode_per_collect = num_train_envs * episode_per_collect_factor
+
+    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    buffer_size = batch_size * buffer_size_factor
+
+    step_per_epoch = batch_size * epoch_size_factor
+
+    num_test_episodes = num_test_envs * test_episodes_factor # just collect this many episodes using policy and checks the performance
+    step_per_collect = batch_size
+
+
+
+
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
-    lr_actor, lr_critic1, lr_critic2 = 1e-4, 1e-5, 1e-5
     actor_optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': lr_actor}
     ])
 
-    critic1 = V_Estimator3(embedding_dim=64, q_outputs=True, problem=problem).to(opts.device) # V_Estimator
+    critic1 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem).to(opts.device) # V_Estimator
     critic1_optimizer = optim.Adam([
         {'params': critic1.parameters(), 'lr': lr_critic1}
     ])
 
-    critic2 = V_Estimator3(embedding_dim=64, q_outputs=True, problem=problem).to(opts.device)
+    critic2 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem).to(opts.device)
     critic2_optimizer = optim.Adam([
         {'params': critic2.parameters(), 'lr': lr_critic2}
     ])
 
-    num_epochs = 200
-    
-    num_train_envs = 64 # has to be smaller or equal to episode_per_collect
-    num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
-    episode_per_collect = num_train_envs *8 #* 16
-
-    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
-    buffer_size = batch_size # doesn't make a lot of sense to multiply here for onpolicy?
-
-    step_per_epoch = buffer_size * 100
-
-    num_test_envs = 1024 # has to be smaller or equal to num_test_episodes
-    num_test_episodes = 1024 # just collect this many episodes using policy and checks the performance
-    step_per_collect = buffer_size
-
     train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
     test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
-    gamma = 1.00
-    tau, alpha = 0.005, None
-
+    
     if alpha == None:
         dummy_env = problem_env_class[opts.problem](opts)
-        target_entropy = -np.prod(dummy_env.action_space.shape)
+        target_entropy = target_ent
         log_alpha = torch.zeros(1, requires_grad=True, device=opts.device)
-        alpha_optim = torch.optim.Adam([log_alpha], lr=3e-4)
+        alpha_optim = torch.optim.Adam([log_alpha], lr=lr_alpha_ent)
         alpha = (target_entropy, log_alpha, alpha_optim)
-
-    logger.writer.add_text("hyperparameters", f"{lr_actor=}, {lr_critic1=}, {lr_critic2=}, {episode_per_collect=}, {batch_size=}, \
-        {step_per_epoch=}, {num_test_envs=}, {tau=}, {alpha=}")
 
     policy = ts.policy.DiscreteSACPolicy(actor=actor, 
                                          actor_optim=actor_optimizer,
@@ -378,38 +441,56 @@ def run_A2C(opts, logger):
         tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
-    critic = V_Estimator3(embedding_dim=64, problem=problem).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
-    lr_actor = 1e-4
-    lr_critic = 5e-5
+    lr_actor = opts.lr_actor # 1e-4
+    lr_critic = opts.lr_critic1 # 5e-5
+    learning_rate_decay = opts.lr_decay
+    lr_scheduler_type = opts.lr_scheduler_type
+    decay_learning_rate = opts.decay_lr # False
+    num_epochs = opts.n_epochs # 200
+    num_train_envs = opts.n_train_envs # 32 # has to be smaller or equal to episode_per_collect
+    episode_per_collect_factor = opts.epc_factor # 1
+    epoch_size_factor = opts.es_factor # 100
+    num_test_envs = opts.n_test_envs # 1024 # has to be smaller or equal to num_test_episodes
+    test_episodes_factor = opts.te_factor # 1
+    gamma = opts.gamma # 1.00
+    repeat_per_collect = opts.repeat_per_collect # how many times to learn each batch
+    critics_embedding_dim = opts.critics_embedding_dim # 64
+    vf_coef, ent_coef, gae_lambda = opts.vf_coef, opts.ent_coef, opts.gae_lambda
+    critic_class_str = opts.critic_class_str
+    critics_class = { 'v1': V_Estimator, 'v3': V_Estimator3 } # critics_class[critic_class_str]
+
+
+
+
+    num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
+    episode_per_collect = num_train_envs * episode_per_collect_factor
+
+    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    buffer_size = batch_size # no buffer_size_factor for onpolicy algorithms as buffer will be cleared after each network update
+
+    step_per_epoch = batch_size * epoch_size_factor
+
+    num_test_episodes = num_test_envs * test_episodes_factor # just collect this many episodes using policy and checks the performance
+    step_per_collect = batch_size
+
+
+
+    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem).to(opts.device)
+    # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': lr_actor},
         {'params': critic.parameters(), 'lr': lr_critic}
     ])
+    lr_scheduler_options = { 
+        'exp': ExponentialLR(optimizer, gamma=learning_rate_decay, verbose=False),
+        'cyclic': CyclicLR(optimizer, opts.cyc_base_lr, opts.cyc_max_lr, step_size_up=opts.cyc_step_size_up, step_size_down=opts.cyc_step_size_down, mode='triangular2', cycle_momentum=False)
+    }
+    lr_scheduler = lr_scheduler_options[opts.lr_scheduler_type]
 
-    lr_scheduler = ExponentialLR(optimizer, gamma=0.9999, verbose=False)
-
-    num_epochs = 200
-    
-    num_train_envs = 64 # has to be smaller or equal to episode_per_collect
-    num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
-    episode_per_collect = num_train_envs *8 #* 4
-
-    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
-    buffer_size = batch_size # doesn't make a lot of sense to multiply here for onpolicy?
-    
-    repeat_per_collect = 1 # how many times to learn each batch
-    step_per_epoch = batch_size * 100
-
-    num_test_envs = 1024 # has to be smaller or equal to num_test_episodes
-    num_test_episodes = num_test_envs #*256 # just collect this many episodes using policy and checks the performance
     # SubprocVectorEnv DummyVectorEnv
     train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
     test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
-    gamma = 1.00
-
-    logger.writer.add_text("hyperparameters", f"{lr_actor=}, {lr_critic=}, {episode_per_collect=}, {batch_size=}, \
-        {step_per_epoch=}, {num_test_envs=}, {repeat_per_collect=}")
 
     distribution_type = Categorical_logits
     policy = ts.policy.A2CPolicy(actor=actor,
@@ -417,8 +498,11 @@ def run_A2C(opts, logger):
                                  optim=optimizer,
                                  dist_fn=distribution_type,
                                  discount_factor=gamma,
-                                 lr_scheduler=lr_scheduler
-                                 ) # updates LR each policy update => with each batch 0.9997^(batches_per_epoch*epoch)
+                                 lr_scheduler=lr_scheduler if decay_learning_rate else None,
+                                 vf_coef=vf_coef,
+                                 ent_coef=ent_coef,
+                                 gae_lambda=gae_lambda
+                                 )
 
     replay_buffer = ts.data.VectorReplayBuffer(total_size=buffer_size, buffer_num=num_of_buffer)
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
@@ -470,7 +554,7 @@ def run_STE_argmax(opts):
     ).to(opts.device)
 
     optimizer = optim.Adam([
-        {'params': model.parameters(), 'lr': opts.lr_model},
+        {'params': model.parameters(), 'lr': opts.lr_actor},
     ])
 
     env = TSP_env(opts)
@@ -652,14 +736,17 @@ def train(opts):
     writer.add_text("args", str(opts))
     logger = TensorboardLogger(writer)
 
-    # Figure out what's the problem
-    #run_STE_argmax(opts)
-    #run_DQN(opts, logger)
-    #run_PG(opts, logger)
-    #run_PPO(opts, logger)
-    #run_SAC(opts, logger) # exploding losses problem? maybe check gradient clipping
-    run_A2C(opts, logger)
+    problem_runner = {
+        'DQN': run_DQN,
+        'PG': run_PG,
+        'PPO': run_PPO,
+        'SAC': run_SAC,
+        'A2C': run_A2C
+    }
 
+    problem_runner[opts.rl_algorithm](opts, logger)
+
+    #run_STE_argmax(opts)
     #manual_testing(opts)
     #run_saved(opts, log_results=True)
     #random_run(opts)
@@ -672,7 +759,8 @@ def run(opts):
     pp.pprint(vars(opts))
 
     # Set the random seed
-    #torch.manual_seed(opts.seed)
+    torch.manual_seed(opts.seed)
+    np.random.seed(opts.seed) # for tianshou random components
 
     # Set the device
     opts.device = torch.device("cuda:0" if opts.use_cuda else "cpu")
