@@ -2,6 +2,10 @@ import os
 import time
 import argparse
 import torch
+import random
+import itertools
+import csv
+import json
 
 
 def get_options(args=None):
@@ -34,7 +38,7 @@ def get_options(args=None):
     parser.add_argument('--lr_decay', type=float, default=1.0, help='Learning rate decay per epoch')
     parser.add_argument('--eval_only', action='store_true', help='Set this value to only evaluate model')
     parser.add_argument('--n_epochs', type=int, default=100, help='The number of epochs to train')
-    parser.add_argument('--seed', type=int, default=1234, help='Random seed to use')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed to use')
     parser.add_argument('--max_grad_norm', type=float, default=1.0,
                         help='Maximum L2 norm for gradient clipping, default 1.0 (0 to disable clipping)')
     parser.add_argument('--no_cuda', action='store_true', help='Disable CUDA')
@@ -58,7 +62,7 @@ def get_options(args=None):
                         help='Data distribution to use during training, defaults and options depend on problem.')
 
     # Misc
-    parser.add_argument('--log_step', type=int, default=50, help='Log info every log_step steps')
+    parser.add_argument('--log_step', type=int, default=1, help='Log info every log_step steps')
     parser.add_argument('--log_dir', default='logs', help='Directory to write TensorBoard information to')
     parser.add_argument('--run_name', default='run', help='Name to identify the run')
     parser.add_argument('--output_dir', default='outputs', help='Directory to write output models to')
@@ -71,10 +75,32 @@ def get_options(args=None):
     parser.add_argument('--no_tensorboard', action='store_true', help='Disable logging TensorBoard files')
     parser.add_argument('--no_progress_bar', action='store_true', help='Disable progress bar')
 
+    parser.add_argument('--args_from_csv', type=str, default=None, help='Extract arguments from csv.')
+    parser.add_argument('--csv_row', type=int, default=0, help='Extract arguments from csv at specified row.')
+
     opts = parser.parse_args(args)
+
+    def get_args_from_csv(path, line_number):
+        args = []
+        with open(path) as f:
+            arg_names = next(itertools.islice(csv.reader(f), 0, None)) # uses line 0 for arg names
+            arg_values = next(itertools.islice(csv.reader(f), line_number, None)) # which line after header to use as values
+            for name, value in zip(arg_names, arg_values):
+                if value != '': # will use default value if csv cell empty
+                    args.append(f"--{name}")
+                    args.append(value)
+        return args
+
+    if opts.args_from_csv:
+        csv_args = get_args_from_csv(opts.args_from_csv, opts.csv_row)
+        opts = parser.parse_args(csv_args)
+
+    if opts.seed is None:
+        opts.seed = random.randint(1,9999)
 
     opts.use_cuda = torch.cuda.is_available() and not opts.no_cuda
     opts.run_name = "{}_{}".format(opts.run_name, time.strftime("%Y%m%dT%H%M%S"))
+
     opts.save_dir = os.path.join(
         opts.output_dir,
         "{}_{}".format(opts.problem, opts.graph_size),
@@ -82,6 +108,12 @@ def get_options(args=None):
     )
     if opts.bl_warmup_epochs is None:
         opts.bl_warmup_epochs = 1 if opts.baseline == 'rollout' else 0
+
     assert (opts.bl_warmup_epochs == 0) or (opts.baseline == 'rollout')
     assert opts.epoch_size % opts.batch_size == 0, "Epoch size must be integer multiple of batch size!"
+
+    # save opts
+    with open(f"args/{opts.run_name}.txt", 'w') as f:
+        f.write(json.dumps(vars(opts)))
+
     return opts
