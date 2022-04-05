@@ -267,7 +267,7 @@ def run_PPO(opts, logger):
 
 
 
-    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
+    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     
     optimizer = optim.Adam([
@@ -380,12 +380,12 @@ def run_SAC(opts, logger):
         {'params': actor.parameters(), 'lr': lr_actor}
     ])
 
-    critic1 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device) # V_Estimator
+    critic1 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device) # V_Estimator
     critic1_optimizer = optim.Adam([
         {'params': critic1.parameters(), 'lr': lr_critic1}
     ])
 
-    critic2 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
+    critic2 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
     critic2_optimizer = optim.Adam([
         {'params': critic2.parameters(), 'lr': lr_critic2}
     ])
@@ -477,7 +477,7 @@ def run_A2C(opts, logger):
 
 
 
-    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
+    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': lr_actor},
@@ -601,7 +601,7 @@ def run_STE_argmax(opts):
             optimizer.step()
             print(costs.mean())
             #print(loss)
-        print(f'Epoch {epoch_idx} Costs: {epoch_costs/opts.epoch_size}')
+        print(f'Epoch {epoch_idx} Costs: {epoch_costs/opts.epoch_size}') # not working rn
 
 def manual_testing(opts):
     problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized }
@@ -614,11 +614,16 @@ def manual_testing(opts):
         obs, reward, done, info = env.step(int(input()))
         print(f"{obs=}, {reward=}, {done=}")
 
+
+#python3 run.py --args_from_csv run_configs/fixed_lr_runs.csv --csv_row 9 --save_name run_009__20220402T071656
 def run_saved(opts, log_results=False):
     t0 = time.time()
 
     problem = load_problem(opts.problem)
     problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized } # _optimized
+
+    critic_class_str = opts.critic_class_str
+    critics_class = { 'v1': V_Estimator, 'v3': V_Estimator3 }
 
     # NOTE: dims must be equivalent to save
     actor = AttentionModel(
@@ -633,6 +638,9 @@ def run_saved(opts, log_results=False):
         tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
+
+    critic = critics_class[critic_class_str](embedding_dim=opts.critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
+
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     learning_rate = 1e-3
     optimizer = optim.Adam([
@@ -645,7 +653,16 @@ def run_saved(opts, log_results=False):
     test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
     gamma, n_step, target_freq = 1.00, 1, 100
 
-    policy = ts.policy.DQNPolicy(actor, optimizer, gamma, n_step, target_update_freq=target_freq)
+    #policy = ts.policy.DQNPolicy(actor, optimizer, gamma, n_step, target_update_freq=target_freq)
+
+    distribution_type = Categorical_logits
+    policy = ts.policy.PPOPolicy(actor=actor,
+                                 critic=critic,
+                                 optim=optimizer,
+                                 dist_fn=distribution_type,
+                                 discount_factor=gamma,
+                                 deterministic_eval=False)
+
     policy.load_state_dict(torch.load(f"policy_dir/{opts.save_name}.pth"))
 
     #print(data)
@@ -685,9 +702,9 @@ def run_saved(opts, log_results=False):
             log['coordinates'] = data.obs['loc'].tolist()
             log['tour_probs'] = [] # [number of runs; graph size; number of envs; graph size]
             log['tour_indices'] = [] # [number of runs; graph size; number of envs]
-        embeddings = policy.model.encode(data.obs)
+        embeddings = policy.actor.encode(data.obs)
         while not done:
-            q_values, _ = policy.model.decode(data.obs, embeddings)
+            q_values, _ = policy.actor.decode(data.obs, embeddings)
             if log_results:
                 act = q_values.max(dim=1)[1] # [1] for getting the indices
                 dist = Categorical_logits(q_values)
@@ -697,7 +714,7 @@ def run_saved(opts, log_results=False):
             data.obs, data.rew, data.done, info = test_envs.step(act)
             total_rew += data.rew
             done=data.done[0]
-            print(np.any(data.done))
+            #print(np.any(data.done))
         if log_results:
             logs['runs'].append(log)
 

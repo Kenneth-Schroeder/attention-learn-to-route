@@ -83,8 +83,12 @@ def get_options(args=None):
 
     parser.add_argument('--args_from_csv', type=str, default=None, help='Extract arguments from csv.')
     parser.add_argument('--csv_row', type=int, default=0, help='Extract arguments from csv at specified row.')
+
+    parser.add_argument('--save_name', type=str, help='Name of saved model.')
+    
     
     opts = parser.parse_args(args)
+    save_name = opts.save_name
 
     def get_args_from_csv(path, line_number):
         args = []
@@ -95,6 +99,9 @@ def get_options(args=None):
                 if value != '': # will use default value if csv cell empty
                     args.append(f"--{name}")
                     args.append(value)
+        if save_name != None:
+            args.append("--save_name")
+            args.append(save_name)
         return args
 
     if opts.args_from_csv:
