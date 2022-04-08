@@ -17,6 +17,7 @@ from problems.tsp.tsp_env_optimized import TSP_env_optimized
 #from problems.op.op_env import OP_env
 from problems.op.op_env_optimized import OP_env_optimized
 from torch.utils.tensorboard import SummaryWriter
+from tianshou.data import to_torch, to_torch_as
 from tianshou.utils import TensorboardLogger
 from torch.optim.lr_scheduler import ExponentialLR, CyclicLR
 
@@ -526,6 +527,67 @@ def run_A2C(opts, logger):
     torch.save(policy.state_dict(), f"policy_dir/{opts.run_name}.pth")
 
 
+def run_custom_REINFORCE(opts, log_results=False):
+    problem = load_problem(opts.problem)
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized }
+
+    critic_class_str = opts.critic_class_str
+    critics_class = { 'v1': V_Estimator, 'v3': V_Estimator3 }
+
+    # NOTE: dims must be equivalent to save
+    actor = AttentionModel(
+        opts.embedding_dim,
+        opts.hidden_dim,
+        problem,
+        output_probs=False,
+        n_encode_layers=opts.n_encode_layers,
+        mask_inner=True,
+        mask_logits=True,
+        normalization=opts.normalization,
+        tanh_clipping=opts.tanh_clipping
+    ).to(opts.device)
+
+    critic = critics_class[critic_class_str](embedding_dim=opts.critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
+
+    # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
+    learning_rate = 1e-4
+    optimizer = optim.Adam([
+        {'params': actor.parameters(), 'lr': learning_rate}
+    ])
+
+    num_test_envs = 512 # has to be smaller or equal to num_test_episodes
+    num_train_envs = batch_size = 16
+    num_episodes = opts.n_epochs
+    num_batches_per_episode = 20
+    # DummyVectorEnv, SubprocVectorEnv
+    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
+    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
+
+    for i in range(num_episodes):
+        for j in range(num_batches_per_episode):
+            episode_rewards = np.zeros(num_train_envs)
+            eposide_log_probs = torch.zeros(num_train_envs, device=opts.device)
+            data = ts.data.Batch(obs={}, act={}, rew={}, done={}, obs_next={}, info={}, policy={})
+            data.obs = train_envs.reset()
+            done = False
+            embeddings = actor.encode(data.obs)
+            while not done:
+                logits, _ = actor.decode(data.obs, embeddings)
+                if log_results:
+                    dist = Categorical_logits(logits)
+                    act = dist.sample()
+                    eposide_log_probs += dist.log_prob(act)
+                data.obs, data.rew, data.done, info = train_envs.step(act)
+                episode_rewards += data.rew
+                done=data.done[0]
+            episode_costs = -to_torch_as(episode_rewards, eposide_log_probs)
+            loss = torch.sum(eposide_log_probs * episode_costs)
+            print(f"Episode: {i}, b{j}: loss={loss.item()}, rew={np.mean(episode_rewards)}")
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
 
 
 
@@ -613,7 +675,6 @@ def manual_testing(opts):
     while not done:
         obs, reward, done, info = env.step(int(input()))
         print(f"{obs=}, {reward=}, {done=}")
-
 
 #python3 run.py --args_from_csv run_configs/fixed_lr_runs.csv --csv_row 9 --save_name run_009__20220402T071656
 def run_saved(opts, log_results=False):
@@ -759,7 +820,8 @@ def train(opts):
         'PG': run_PG,
         'PPO': run_PPO,
         'SAC': run_SAC,
-        'A2C': run_A2C
+        'A2C': run_A2C,
+        'REINFORCE': run_custom_REINFORCE
     }
 
     problem_runner[opts.rl_algorithm](opts, logger)
