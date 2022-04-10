@@ -3,4 +3,4 @@ tsp,20,128,128,3,instance,0.0,DQN,5E-04,,,exp,TRUE,0.9992,,,,,TRUE,64,64,2,20,10
 tsp,20,128,128,3,instance,0.0,PG,5E-05,,,exp,TRUE,0.9992,,,,,,64,64,2,,100,20,1.0,,,,,1,,,,,,,,,,,50,,,,,FALSE,,dist,PG_default
 tsp,20,128,128,3,instance,0.0,PPO,1E-04,1E-04,,exp,TRUE,0.9992,,,,,,64,64,2,,100,20,1.0,,,,,1,v3,0.2,0.5,0.01,1.00,128,,,,,50,TRUE,leaky,FALSE,,,,dist,PPO_default
 tsp,20,128,128,3,instance,0.0,SAC,1E-04,1E-05,1E-05,,,,,,,,,64,64,2,1,100,20,1.0,,,,,,v3,,,,,128,0.005,,-1,3E-04,50,TRUE,leaky,FALSE,,,,dist,SAC_default
-tsp,20,128,128,3,instance,0.0,A2C,1E-04,5E-05,,exp,TRUE,0.9992,,,,,,64,64,2,,100,20,1.0,,,,,1,v3,,0.5,0.01,1.00,128,,,,,50,TRUE,leaky,FALSE,,,,dist,A2C_default
+tsp,20,128,128,3,instance,0.0,A2C,1E-04,5E-05,,exp,FALSE,0.9992,,,,,,64,64,2,,100,20,1.0,,,,,1,v3,,0.5,0.01,1.00,128,,,,,50,TRUE,leaky,FALSE,,,,dist,A2C_default

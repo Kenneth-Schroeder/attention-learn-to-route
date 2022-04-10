@@ -10,3 +10,4 @@ __pycache__/
 *.log
 *.bak
 .DS_Store
+log_dir

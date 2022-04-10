@@ -30,7 +30,7 @@ def get_options(args=None):
     parser.add_argument('--lr_critic1', type=float, default=1e-3, help="Set the learning rate for the critic network")
     parser.add_argument('--lr_critic2', type=float, default=1e-3, help="Set the learning rate for the critic network")
     parser.add_argument('--lr_scheduler_type', type=str, default='exp', help='Which decay schedule to use.')
-    parser.add_argument('--decay_lr', type=bool, default=True, help='Use learning rate decay')
+    parser.add_argument('--decay_lr', type=int, default=True, help='Use learning rate decay')
     parser.add_argument('--lr_decay', type=float, default=0.9999, help='Learning rate decay factor applied after each policy update (after each batch)')
 
     parser.add_argument('--cyc_base_lr', type=float, default=1e-5, help='Initial learning rate which is the lower boundary of cyclic LR scheduler.')
@@ -38,7 +38,7 @@ def get_options(args=None):
     parser.add_argument('--cyc_step_size_up', type=int, default=2000, help='Number of training iterations in the increasing half of a cycle.')
     parser.add_argument('--cyc_step_size_down', type=int, default=None, help='Number of training iterations in the decreasing half of a cycle.')
 
-    parser.add_argument('--decay_eps', type=bool, default=True, help='Use epsilon-greedy decay')
+    parser.add_argument('--decay_eps', type=int, default=True, help='Use epsilon-greedy decay')
     
     parser.add_argument('--n_train_envs', type=int, default=32, help='Number of train environments.')
     parser.add_argument('--n_test_envs', type=int, default=64, help='Number of test environments.')
@@ -73,11 +73,11 @@ def get_options(args=None):
     parser.add_argument('--data_distribution', type=str, default=None,
                         help='Data distribution of the OP per-node rewards, defaults to dist')
 
-    parser.add_argument('--negate_critics_output', type=bool, default=True, help='If critics outputs should be negated so let them learn positive values')
+    parser.add_argument('--negate_critics_output', type=int, default=True, help='If critics outputs should be negated so let them learn positive values')
     parser.add_argument('--v1critic_activation', type=str, default='leaky', help='Which activation functions to use in critics')
-    parser.add_argument('--v1critic_inv_visited', type=bool, default=False, help='Whether to pass visited=1 or unvisited=1 values to critics')
+    parser.add_argument('--v1critic_inv_visited', type=int, default=False, help='Whether to pass visited=1 or unvisited=1 values to critics')
     parser.add_argument('--max_grad_norm', type=float, default=None, help='Whether to use gradient clipping')
-    parser.add_argument('--neg_PG', type=bool, default=False, help='Whether to use custom PGPolicy for strictly negative rewards')
+    parser.add_argument('--neg_PG', type=int, default=False, help='Whether to use custom PGPolicy for strictly negative rewards')
 
     parser.add_argument('--run_name', default='run', help='Name to identify the run')
 
@@ -98,7 +98,12 @@ def get_options(args=None):
             for name, value in zip(arg_names, arg_values):
                 if value != '': # will use default value if csv cell empty
                     args.append(f"--{name}")
-                    args.append(value)
+                    if value.lower() in ('yes', 'true', 't', 'y', '1'):
+                        args.append("1")
+                    elif value.lower() in ('no', 'false', 'f', 'n', '0'):
+                        args.append("0")
+                    else:
+                        args.append(value)
         if save_name != None:
             args.append("--save_name")
             args.append(save_name)
