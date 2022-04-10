@@ -3,3 +3,5 @@ outputs
 policy_dir
 eval_logs
 args
+.git
+__pycache__
