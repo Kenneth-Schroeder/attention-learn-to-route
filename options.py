@@ -6,6 +6,7 @@ import random
 import itertools
 import csv
 import json
+from pathlib import Path
 
 
 def get_options(args=None):
@@ -84,11 +85,21 @@ def get_options(args=None):
     parser.add_argument('--args_from_csv', type=str, default=None, help='Extract arguments from csv.')
     parser.add_argument('--csv_row', type=int, default=0, help='Extract arguments from csv at specified row.')
 
-    parser.add_argument('--save_name', type=str, help='Name of saved model.')
+    parser.add_argument('--args_from_json', type=str, default=None, help='Extract arguments from json file.')
+
+    parser.add_argument('--saved_policy_path', type=str, help='Name of saved model.')
     
     
     opts = parser.parse_args(args)
-    save_name = opts.save_name
+    saved_policy_path = opts.saved_policy_path
+
+    def get_opts_from_json(path, saved_policy_path=None):
+        with open(path) as json_file:
+            t_args = argparse.Namespace()
+            t_args.__dict__.update(json.load(json_file))
+            if saved_policy_path != None:
+                t_args.__dict__.update({'saved_policy_path': saved_policy_path})
+            return parser.parse_args(namespace=t_args)
 
     def get_args_from_csv(path, line_number):
         args = []
@@ -104,14 +115,19 @@ def get_options(args=None):
                         args.append("0")
                     else:
                         args.append(value)
-        if save_name != None:
-            args.append("--save_name")
-            args.append(save_name)
+        if saved_policy_path != None:
+            args.append("--saved_policy_path")
+            args.append(saved_policy_path)
         return args
 
-    if opts.args_from_csv:
+    if opts.saved_policy_path != None:
+        args_path = f"args/{Path(saved_policy_path).stem}.txt"
+        opts = get_opts_from_json(args_path, opts.saved_policy_path)
+    elif opts.args_from_csv:
         csv_args = get_args_from_csv(opts.args_from_csv, opts.csv_row)
         opts = parser.parse_args(csv_args)
+    elif opts.args_from_json: # https://stackoverflow.com/questions/28348117/using-argparse-and-json-together
+        opts = get_opts_from_json(opts.args_from_json)
 
     if opts.seed is None:
         opts.seed = random.randint(1,9999)

@@ -21,16 +21,13 @@ class V_Estimator(nn.Module):
                  negate_outputs=True,
                  q_outputs=False,
                  n_encode_layers=5,
-                 normalization='instance',
+                 normalization='instance', #instance, batch, none
                  n_heads=8):
         super(V_Estimator, self).__init__()
 
         self.activation_function = { 'leaky': torch.nn.LeakyReLU(negative_slope=0.2), 'relu': torch.nn.ReLU() }[activation_str]
         self.invert_visited = invert_visited
 
-        self.embedding_dim = embedding_dim
-        self.n_encode_layers = n_encode_layers
-        self.n_heads = n_heads
         self.q_outputs = q_outputs
         self.negate_outputs = negate_outputs
 
@@ -79,7 +76,7 @@ class V_Estimator(nn.Module):
             is_depot = torch.zeros((batch_size, n_loc, 1), dtype=torch.float, device=loc.device)
             is_depot[:, 0, 0] = 1
 
-            remaining_len = obs['remaining_length'][:, None, :].expand(-1, n_loc,-1)
+            remaining_len = obs['remaining_length'][:, None, None].expand(-1, n_loc,-1)
 
             my_input = torch.cat((loc, is_depot, visited, prev_a, remaining_len), 2)
         else:

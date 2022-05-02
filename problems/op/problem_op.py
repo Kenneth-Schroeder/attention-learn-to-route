@@ -62,10 +62,14 @@ class OP(object):
 def generate_instance(size, prize_type):
     # Details see paper
     MAX_LENGTHS = {
-        5: 1., # only for debugging
-        20: 2.,
-        50: 3.,
-        100: 4.
+        20: 2.0,
+        30: 2.5,
+        40: 2.5,
+        50: 3.0,
+        100: 4.0,
+        200: 4.0,
+        500: 4.5,
+        1000: 5.0,
     }
 
     loc = torch.FloatTensor(size, 2).uniform_(0, 1)

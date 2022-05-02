@@ -394,7 +394,7 @@ class AttentionModel(nn.Module):
         if self.mask_inner:
             assert self.mask_logits, "Cannot mask inner without masking logits"
             min_comp_value = torch.min(compatibility).detach() # detach cuz cant backpropagate here through mask
-            compatibility[mask[None, :, :, None, :].expand_as(compatibility)] = min_comp_value-1_000_000
+            compatibility[mask[None, :, :, None, :].expand_as(compatibility)] = min_comp_value-1_000_000 # -math.inf #min_comp_value-1_000_000
 
         # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size)
         heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)
@@ -415,7 +415,7 @@ class AttentionModel(nn.Module):
             logits = torch.tanh(logits) * self.tanh_clipping
         if self.mask_logits:
             min_logits_value = torch.min(logits).detach() # detach cuz cant backpropagate here through mask
-            logits[mask] = min_logits_value-1_000_000
+            logits[mask] = min_comp_value-1_000_000 # -math.inf #min_logits_value-1_000_000
             # can't mask with -inf as tianshou might input observations of done envs where all entries would become -inf
             # this might then fail at some softmax or gradients will become too high at some point
 

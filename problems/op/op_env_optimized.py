@@ -65,9 +65,10 @@ class OP_env_optimized(gym.Env):
     done = self.prev_a == 0
 
     dist_to_nodes = (self.coords[action][None, :] - self.coords).norm(p=2, dim=-1)
-    dist_necessary = dist_to_nodes + self.dist_to_depot
-    self.forbidden_actions = torch.logical_or(dist_necessary > self.remaining_length, self.visited) # distances from current node to all other nodes, masked by visited nodes, and by remaining length - dist to depot
-    
+    potentially_remaining_lengths = self.remaining_length - dist_to_nodes
+    # https://stackoverflow.com/questions/3744206/addition-vs-subtraction-in-loss-of-significance-with-floating-points
+    self.forbidden_actions = torch.logical_or(self.dist_to_depot > potentially_remaining_lengths, self.visited) # distances from current node to all other nodes, masked by visited nodes, and by remaining length - dist to depot
+
     info = {} # empty dict
     return self.get_obs(), reward.cpu(), done.cpu(), info
 
@@ -84,9 +85,8 @@ class OP_env_optimized(gym.Env):
     self.prizes_exc_depot = move_to(dataset.data[0]['prize'], self.opts.device)
     self.remaining_length = move_to(dataset.data[0]['max_length'], self.opts.device)
     self.dist_to_depot = (self.coords[0][None, :] - self.coords).norm(p=2, dim=-1)
-
-    dist_necessary = self.dist_to_depot + self.dist_to_depot
-    self.forbidden_actions = dist_necessary > self.remaining_length
+    
+    self.forbidden_actions = self.dist_to_depot > self.remaining_length - self.dist_to_depot
 
     return self.get_obs() # reward, done, info can't be included as there are none yet
 

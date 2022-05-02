@@ -12,7 +12,7 @@ from nets.v_estimator3 import V_Estimator3
 from utils import load_problem
 
 import tianshou as ts
-#from problems.tsp.tsp_env import TSP_env
+from problems.tsp.tsp_env import TSP_env
 from problems.tsp.tsp_env_optimized import TSP_env_optimized
 #from problems.op.op_env import OP_env
 from problems.op.op_env_optimized import OP_env_optimized
@@ -28,6 +28,7 @@ import json
 
 from custom_classes.random import RandomPolicy
 from custom_classes.pg import PGPolicy_custom
+from custom_classes.discrete_sac import DiscreteSACPolicy_custom
 
 class Categorical_logits(torch.distributions.categorical.Categorical):
     def __init__(self, logits, validate_args=None):
@@ -44,6 +45,15 @@ def updatelog_eps_lr(decay_learning_rate, decay_epsilon, policy, eps, logger, ep
             lr_scheduler.step()
         if log:
             logger.write("train/lr", env_step, {'LR':lr_scheduler.get_last_lr()[0]})
+
+def updatelog_lr(decay_learning_rate, logger, lr_schedulers=None, env_step=None, log=False, labels=None):
+    if decay_learning_rate and lr_schedulers is not None:
+        for scheduler in lr_schedulers:
+            scheduler.step()
+        if log:
+            for scheduler, label  in zip(lr_schedulers, labels):
+                logger.write("train/lr", env_step, {label: scheduler.get_last_lr()[0]})
+
 
 
 def run_DQN(opts, logger):
@@ -268,7 +278,7 @@ def run_PPO(opts, logger):
 
 
 
-    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
+    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited, normalization=opts.normalization).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     
     optimizer = optim.Adam([
@@ -326,7 +336,7 @@ def run_PPO(opts, logger):
 
 def run_SAC(opts, logger):
     problem = load_problem(opts.problem)
-    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized }
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized } # _optimized
 
     actor = AttentionModel(
         opts.embedding_dim,
@@ -343,6 +353,10 @@ def run_SAC(opts, logger):
     lr_actor = opts.lr_actor # 1e-4
     lr_critic1 = opts.lr_critic1 # 1e-5
     lr_critic2 = opts.lr_critic2 # 1e-5
+    learning_rate_decay = opts.lr_decay # 0.99995
+    lr_scheduler_type = opts.lr_scheduler_type
+    decay_learning_rate = opts.decay_lr # False
+
 
     num_epochs = opts.n_epochs # 200
     num_train_envs = opts.n_train_envs # 32 # has to be smaller or equal to episode_per_collect
@@ -375,44 +389,55 @@ def run_SAC(opts, logger):
 
 
 
-
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     actor_optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': lr_actor}
     ])
 
-    critic1 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device) # V_Estimator
+    critic1 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited, normalization=opts.normalization).to(opts.device) # V_Estimator
     critic1_optimizer = optim.Adam([
         {'params': critic1.parameters(), 'lr': lr_critic1}
     ])
 
-    critic2 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
+    critic2 = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, q_outputs=True, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited, normalization=opts.normalization).to(opts.device)
     critic2_optimizer = optim.Adam([
         {'params': critic2.parameters(), 'lr': lr_critic2}
     ])
+
+
+    def create_scheduler(optimizer, schedule_type):
+        if schedule_type == 'exp':
+            return ExponentialLR(optimizer, gamma=learning_rate_decay, verbose=False)
+        elif schedule_type == 'cyclic':
+            return CyclicLR(optimizer, opts.cyc_base_lr, opts.cyc_max_lr, step_size_up=opts.cyc_step_size_up, step_size_down=opts.cyc_step_size_down, mode='triangular2', cycle_momentum=False)
+
+    lr_scheduler_actor = create_scheduler(actor_optimizer, opts.lr_scheduler_type)
+    lr_scheduler_critic1 = create_scheduler(critic1_optimizer, opts.lr_scheduler_type)
+    lr_scheduler_critic2 = create_scheduler(critic2_optimizer, opts.lr_scheduler_type)
+
+
 
     train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
     test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
     
     if alpha == None:
-        dummy_env = problem_env_class[opts.problem](opts)
         target_entropy = target_ent
         log_alpha = torch.zeros(1, requires_grad=True, device=opts.device)
         alpha_optim = torch.optim.Adam([log_alpha], lr=lr_alpha_ent)
         alpha = (target_entropy, log_alpha, alpha_optim)
 
-    policy = ts.policy.DiscreteSACPolicy(actor=actor, 
-                                         actor_optim=actor_optimizer,
-                                         critic1=critic1,
-                                         critic2=critic2,
-                                         critic1_optim=critic1_optimizer,
-                                         critic2_optim=critic2_optimizer,
-                                         tau=tau,
-                                         gamma=gamma,
-                                         alpha=alpha,
-                                         exploration_noise=None,
-                                         reward_normalization=False,
-                                         deterministic_eval=False)
+    policy = DiscreteSACPolicy_custom(actor=actor, 
+                                      actor_optim=actor_optimizer,
+                                      critic1=critic1,
+                                      critic2=critic2,
+                                      critic1_optim=critic1_optimizer,
+                                      critic2_optim=critic2_optimizer,
+                                      tau=tau,
+                                      gamma=gamma,
+                                      alpha=alpha,
+                                      exploration_noise=None,
+                                      reward_normalization=False,
+                                      deterministic_eval=False)
 
     replay_buffer = ts.data.VectorReplayBuffer(total_size=buffer_size, buffer_num=num_of_buffer)
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
@@ -421,6 +446,7 @@ def run_SAC(opts, logger):
     result = ts.trainer.offpolicy_trainer(
         policy, train_collector, test_collector, num_epochs, step_per_epoch, step_per_collect,
         num_test_episodes, batch_size, update_per_step=1 / step_per_collect,
+        train_fn=lambda epoch, env_step: updatelog_lr(decay_learning_rate, logger, lr_schedulers=[lr_scheduler_actor, lr_scheduler_critic1, lr_scheduler_critic2], env_step=env_step, log=True, labels=['ActorLR', 'Critic1LR', 'Critic2LR']),
         logger=logger
     )
 
@@ -478,7 +504,7 @@ def run_A2C(opts, logger):
 
 
 
-    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
+    critic = critics_class[critic_class_str](embedding_dim=critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited, normalization=opts.normalization).to(opts.device)
     # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': lr_actor},
@@ -676,17 +702,16 @@ def manual_testing(opts):
         obs, reward, done, info = env.step(int(input()))
         print(f"{obs=}, {reward=}, {done=}")
 
-#python3 run.py --args_from_csv run_configs/fixed_lr_runs.csv --csv_row 9 --save_name run_009__20220402T071656
-def run_saved(opts, log_results=False):
+
+def run_saved(opts, log_results=False, deterministic_eval=True):
     t0 = time.time()
 
     problem = load_problem(opts.problem)
-    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized } # _optimized
-
+    problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized }
     critic_class_str = opts.critic_class_str
     critics_class = { 'v1': V_Estimator, 'v3': V_Estimator3 }
 
-    # NOTE: dims must be equivalent to save
+    # ARCHITECTURE AND PLACEHOLDER ///////////////////////////////////////////////////////////////////////////////////////////////////
     actor = AttentionModel(
         opts.embedding_dim,
         opts.hidden_dim,
@@ -699,83 +724,98 @@ def run_saved(opts, log_results=False):
         tanh_clipping=opts.tanh_clipping
     ).to(opts.device)
 
+    critic1 = critics_class[critic_class_str](embedding_dim=opts.critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
+    critic2 = critics_class[critic_class_str](embedding_dim=opts.critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
 
-    critic = critics_class[critic_class_str](embedding_dim=opts.critics_embedding_dim, problem=problem, negate_outputs=opts.negate_critics_output, activation_str=opts.v1critic_activation, invert_visited=opts.v1critic_inv_visited).to(opts.device)
-
-    # https://discuss.pytorch.org/t/how-to-optimize-multi-models-parameter-in-one-optimizer/3603/6
-    learning_rate = 1e-3
+    # PLACEHOLDERS
+    learning_rate = 1e-3 
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': learning_rate}
     ])
+    critic1_optimizer = optim.Adam([
+        {'params': critic1.parameters(), 'lr': learning_rate}
+    ])
+    critic2_optimizer = optim.Adam([
+        {'params': critic2.parameters(), 'lr': learning_rate}
+    ])
+    gamma, alpha = 1.00, 0.01
 
-    num_test_envs = 8 # has to be smaller or equal to num_test_episodes
+    num_eval_envs = 8
     num_runs = 100
-    # DummyVectorEnv, SubprocVectorEnv
-    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
-    gamma, n_step, target_freq = 1.00, 1, 100
-
-    #policy = ts.policy.DQNPolicy(actor, optimizer, gamma, n_step, target_update_freq=target_freq)
-
+    eval_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_eval_envs)])
+    
+    # POLICIES /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     distribution_type = Categorical_logits
-    policy = ts.policy.PPOPolicy(actor=actor,
-                                 critic=critic,
-                                 optim=optimizer,
-                                 dist_fn=distribution_type,
-                                 discount_factor=gamma,
-                                 deterministic_eval=False)
 
-    policy.load_state_dict(torch.load(f"policy_dir/{opts.save_name}.pth"))
+    if opts.rl_algorithm == 'DQN':
+        policy = ts.policy.DQNPolicy(actor, optimizer, gamma, opts.n_step, target_update_freq=opts.target_freq)
+    elif opts.rl_algorithm == 'PG':
+        Policy_class = PGPolicy_custom if opts.neg_PG else ts.policy.PGPolicy
+        policy = Policy_class(model=actor,
+                              optim=optimizer,
+                              dist_fn=distribution_type,
+                              discount_factor=gamma)
+    elif opts.rl_algorithm == 'PPO':
+        policy = ts.policy.PPOPolicy(actor=actor,
+                                     critic=critic1,
+                                     optim=optimizer, # NOTE: optimizer originally contains actor and critic params for PPO implementation! but here it is just used as placeholder
+                                     dist_fn=distribution_type,
+                                     discount_factor=gamma)
+    elif opts.rl_algorithm == 'A2C':
+        policy = ts.policy.A2CPolicy(actor=actor,
+                                     critic=critic1,
+                                     optim=optimizer,
+                                     dist_fn=distribution_type,
+                                     discount_factor=gamma)
+    elif opts.rl_algorithm == 'SAC':
+        policy = DiscreteSACPolicy_custom(actor=actor, 
+                                          actor_optim=optimizer,
+                                          critic1=critic1,
+                                          critic2=critic2,
+                                          critic1_optim=critic1_optimizer,
+                                          critic2_optim=critic2_optimizer)
+    else:
+        print('RL Algorithm specified is not compatible with evaluation mode.')
+        return
+    
+    policy.load_state_dict(torch.load(opts.saved_policy_path)) # f"policy_dir/{opts.save_name}.pth"
 
-    #print(data)
-    total_rew = np.zeros(num_test_envs)
+    # EVALUATION /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    total_rew = np.zeros(num_eval_envs)
     logs = {}
     logs['runs'] = []
 
-    #for i in range(num_runs):
-    #    data = ts.data.Batch(obs={}, act={}, rew={}, done={}, obs_next={}, info={}, policy={})
-    #    data.obs = test_envs.reset()
-    #    done = False
-    #    if log_results:
-    #        log = {}
-    #        log['coordinates'] = data.obs['loc'].tolist()
-    #        log['tour_probs'] = [] # [number of runs; graph size; number of envs; graph size]
-    #        log['tour_indices'] = [] # [number of runs; graph size; number of envs]
-    #    while not done:
-    #        result_batch = policy(data)
-    #        if log_results:
-    #            log['tour_probs'].append(Categorical_logits(result_batch.logits).probs.tolist())
-    #            log['tour_indices'].append(result_batch.act.tolist())
-    #        data.obs, data.rew, data.done, info = test_envs.step(result_batch.act)
-    #        total_rew += data.rew
-    #        #print(f"{rew=}, {done=}") #{obs=},
-    #        done=data.done[0]
-    #    if log_results:
-    #        logs['runs'].append(log)
-
-    # difference from encoder/decoder separation with 1 env and 10000 runes: 1186 (72%) vs 1630 seconds
-    # and with optimized env: 
     for i in range(num_runs):
         data = ts.data.Batch(obs={}, act={}, rew={}, done={}, obs_next={}, info={}, policy={})
-        data.obs = test_envs.reset()
+        data.obs = eval_envs.reset()
+        not_done_mask = np.ones(num_eval_envs, dtype=bool)
+
         done = False
         if log_results:
             log = {}
             log['coordinates'] = data.obs['loc'].tolist()
-            log['tour_probs'] = [] # [number of runs; graph size; number of envs; graph size]
-            log['tour_indices'] = [] # [number of runs; graph size; number of envs]
+            log['tour_probs'] = []
+            log['tour_indices'] = []
         embeddings = policy.actor.encode(data.obs)
         while not done:
-            q_values, _ = policy.actor.decode(data.obs, embeddings)
+            logits, _ = policy.actor.decode(data.obs, embeddings[not_done_mask])
+            dist = Categorical_logits(logits)
+
+            if deterministic_eval:
+                act = logits.max(dim=1)[1] # [1] for getting the indices
+            else:
+                act = dist.sample()
+
             if log_results:
-                act = q_values.max(dim=1)[1] # [1] for getting the indices
-                dist = Categorical_logits(q_values)
                 log['tour_probs'].append(dist.probs.tolist())
-                #act = dist.sample()
                 log['tour_indices'].append(act.tolist())
-            data.obs, data.rew, data.done, info = test_envs.step(act)
-            total_rew += data.rew
-            done=data.done[0]
-            #print(np.any(data.done))
+
+            data.obs, data.rew, data.done, info = eval_envs.step(act, id=np.flatnonzero(not_done_mask))
+
+            total_rew[not_done_mask] += data.rew
+            done=np.all(data.done)
+            not_done_mask[not_done_mask] = np.logical_not(data.done) # updating all values that were not done before
+            data = data[np.logical_not(data.done)]
         if log_results:
             logs['runs'].append(log)
 
@@ -787,6 +827,10 @@ def run_saved(opts, log_results=False):
             json.dump(logs, fp)
 
     print(f"{total_rew=}, {np.mean(total_rew)/num_runs=}, {total_time=}")
+
+
+
+
 
 def random_run(opts):
     problem = load_problem(opts.problem)
@@ -811,9 +855,14 @@ def random_run(opts):
 
 
 def train(opts):
+    # python3 run.py --saved_policy_path policy_dir/run_167__20220501T094242.pth
+    if opts.saved_policy_path:
+        run_saved(opts, log_results=True)
+        return
+    
     writer = SummaryWriter(f"log_dir/{opts.run_name}")
     writer.add_text("args", str(opts))
-    logger = TensorboardLogger(writer)
+    logger = TensorboardLogger(writer, train_interval=1000, test_interval=1, update_interval=1)
 
     problem_runner = {
         'DQN': run_DQN,
@@ -828,7 +877,6 @@ def train(opts):
 
     #run_STE_argmax(opts)
     #manual_testing(opts)
-    #run_saved(opts, log_results=True)
     #random_run(opts)
 
 

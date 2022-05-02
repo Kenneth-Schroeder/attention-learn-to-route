@@ -129,10 +129,13 @@ class Normalization(nn.Module):
             'instance': nn.InstanceNorm1d
         }.get(normalization, None)
 
-        self.normalizer = normalizer_class(embed_dim, affine=True)
+        if normalizer_class is not None:
+            self.normalizer = normalizer_class(embed_dim, affine=True)
+            # Normalization by default initializes affine parameters with bias 0 and weight unif(0,1) which is too large!
+            # self.init_parameters()
+        else:
+            self.normalizer = None
 
-        # Normalization by default initializes affine parameters with bias 0 and weight unif(0,1) which is too large!
-        # self.init_parameters()
 
     def init_parameters(self):
 
