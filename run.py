@@ -703,7 +703,7 @@ def manual_testing(opts):
         print(f"{obs=}, {reward=}, {done=}")
 
 
-def run_saved(opts, log_results=False, deterministic_eval=True):
+def run_saved(opts, log_solutions=False, logger=None, deterministic_eval=True):
     t0 = time.time()
 
     problem = load_problem(opts.problem)
@@ -740,7 +740,7 @@ def run_saved(opts, log_results=False, deterministic_eval=True):
     ])
     gamma, alpha = 1.00, 0.01
 
-    num_eval_envs = 8
+    num_eval_envs = 10
     num_runs = 100
     eval_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_eval_envs)])
     
@@ -781,24 +781,25 @@ def run_saved(opts, log_results=False, deterministic_eval=True):
     policy.load_state_dict(torch.load(opts.saved_policy_path)) # f"policy_dir/{opts.save_name}.pth"
 
     # EVALUATION /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    total_rew = np.zeros(num_eval_envs)
+    all_rewards = []
     logs = {}
     logs['runs'] = []
 
     for i in range(num_runs):
+        total_rew = np.zeros(num_eval_envs)
         data = ts.data.Batch(obs={}, act={}, rew={}, done={}, obs_next={}, info={}, policy={})
         data.obs = eval_envs.reset()
         not_done_mask = np.ones(num_eval_envs, dtype=bool)
 
         done = False
-        if log_results:
+        if log_solutions:
             log = {}
             log['coordinates'] = data.obs['loc'].tolist()
             log['tour_probs'] = []
             log['tour_indices'] = []
-        embeddings = policy.actor.encode(data.obs)
+        embeddings = policy.actor.encode(data.obs) if opts.rl_algorithm != 'DQN' else policy.model.encode(data.obs)
         while not done:
-            logits, _ = policy.actor.decode(data.obs, embeddings[not_done_mask])
+            logits, _ = policy.actor.decode(data.obs, embeddings[not_done_mask]) if opts.rl_algorithm != 'DQN' else policy.model.decode(data.obs, embeddings[not_done_mask])
             dist = Categorical_logits(logits)
 
             if deterministic_eval:
@@ -806,7 +807,7 @@ def run_saved(opts, log_results=False, deterministic_eval=True):
             else:
                 act = dist.sample()
 
-            if log_results:
+            if log_solutions:
                 log['tour_probs'].append(dist.probs.tolist())
                 log['tour_indices'].append(act.tolist())
 
@@ -816,38 +817,48 @@ def run_saved(opts, log_results=False, deterministic_eval=True):
             done=np.all(data.done)
             not_done_mask[not_done_mask] = np.logical_not(data.done) # updating all values that were not done before
             data = data[np.logical_not(data.done)]
-        if log_results:
+        all_rewards.append(total_rew)
+        if log_solutions:
             logs['runs'].append(log)
 
     t1 = time.time()
     total_time = t1-t0
 
-    if log_results:
+    if log_solutions:
         with open(f"eval_logs/{opts.run_name}" + ".json", "w") as fp:
             json.dump(logs, fp)
 
-    print(f"{total_rew=}, {np.mean(total_rew)/num_runs=}, {total_time=}")
+    all_rewards = np.stack(all_rewards)
+    if logger is not None:
+        logger.write("eval/rew", opts.graph_size, {'rew': np.mean(all_rewards)})
+        logger.write("eval/std", opts.graph_size, {'std': np.std(all_rewards)})
+        logger.write("eval/avg_time", opts.graph_size, {'avg_time': total_time/(num_eval_envs*num_runs)})
+
+    print(f"Size: {opts.graph_size}, Mean: {np.mean(all_rewards)}, Std: {np.std(all_rewards)}, Avg Time: {total_time/(num_eval_envs*num_runs)}")
 
 
 
 
 
-def random_run(opts):
+def random_run(opts, logger=None):
     problem = load_problem(opts.problem)
     problem_env_class = { 'tsp': TSP_env_optimized, 'op': OP_env_optimized } # _optimized
 
     policy = RandomPolicy()
 
-    num_train_envs = 32
-    n_episodes = num_train_envs *400
+    num_train_envs = 10
+    n_episodes = num_train_envs *100
 
     envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
     collector = ts.data.Collector(policy, envs, exploration_noise=False)
 
     result = collector.collect(n_episode=n_episodes)
 
-    print(n_episodes)
-    print(result['rew'])
+    if logger is not None:
+        logger.write("eval/rew", opts.graph_size, {'rew': result['rew']})
+        logger.write("eval/std", opts.graph_size, {'std': result['rew_std']})
+
+    print(f"Size: {opts.graph_size}, Mean: {result['rew']}, Std: {result['rew_std']}")
 
 
 
@@ -857,7 +868,14 @@ def random_run(opts):
 def train(opts):
     # python3 run.py --saved_policy_path policy_dir/run_167__20220501T094242.pth
     if opts.saved_policy_path:
-        run_saved(opts, log_results=True)
+        writer = SummaryWriter(f"log_dir/{opts.run_name}")
+        writer.add_text("args", str(opts))
+        logger = TensorboardLogger(writer, train_interval=1000, test_interval=1, update_interval=1)
+
+        graph_sizes = [20, 30, 40, 50, 100] # [5, 10, 20, 30, 40, 50, 100]
+        for graph_size in graph_sizes:
+            opts.graph_size = graph_size
+            run_saved(opts, logger=logger)
         return
     
     writer = SummaryWriter(f"log_dir/{opts.run_name}")
