@@ -93,7 +93,7 @@ def get_options(args=None):
     opts = parser.parse_args(args)
     saved_policy_path = opts.saved_policy_path
 
-    def get_opts_from_json(path, saved_policy_path=None):
+    def get_opts_from_json(path, graph_size, saved_policy_path=None):
         with open(path) as json_file:
             t_args = argparse.Namespace()
             t_args.__dict__.update(json.load(json_file))
@@ -122,12 +122,12 @@ def get_options(args=None):
 
     if opts.saved_policy_path != None:
         args_path = f"args/{Path(saved_policy_path).stem}.txt"
-        opts = get_opts_from_json(args_path, opts.saved_policy_path)
+        opts = get_opts_from_json(args_path, opts.graph_size, opts.saved_policy_path)
     elif opts.args_from_csv:
         csv_args = get_args_from_csv(opts.args_from_csv, opts.csv_row)
         opts = parser.parse_args(csv_args)
     elif opts.args_from_json: # https://stackoverflow.com/questions/28348117/using-argparse-and-json-together
-        opts = get_opts_from_json(opts.args_from_json)
+        opts = get_opts_from_json(opts.args_from_json, opts.graph_size)
 
     if opts.seed is None:
         opts.seed = random.randint(1,9999)
@@ -136,7 +136,8 @@ def get_options(args=None):
     opts.run_name = "{}_{}".format(opts.run_name, time.strftime("%Y%m%dT%H%M%S"))
 
     # save opts
-    with open(f"args/{opts.run_name}.txt", 'w') as f:
-        f.write(json.dumps(vars(opts)))
+    if not opts.saved_policy_path:
+        with open(f"args/{opts.run_name}.txt", 'w') as f:
+            f.write(json.dumps(vars(opts)))
 
     return opts
