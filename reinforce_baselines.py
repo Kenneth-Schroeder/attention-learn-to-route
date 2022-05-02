@@ -208,7 +208,7 @@ class RolloutBaseline(Baseline):
 
             p_val = p / 2  # one-sided
             assert t < 0, "T-statistic should be negative"
-            print("p-value: {}".format(p_val))
+            # print("p-value: {}".format(p_val))
             if p_val < self.opts.bl_alpha:
                 print('Update baseline')
                 self._update_model(model, epoch)

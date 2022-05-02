@@ -16,13 +16,17 @@ def get_inner_model(model):
     return model.module if isinstance(model, DataParallel) else model
 
 
-def validate(model, dataset, opts):
+def validate(model, dataset, opts, logger=None):
     # Validate
     print('Validating...')
     cost = rollout(model, dataset, opts)
     avg_cost = cost.mean()
     print('Validation overall avg_cost: {} +- {}'.format(
         avg_cost, torch.std(cost) / math.sqrt(len(cost))))
+
+    if logger is not None:
+        logger.log_value('eval/rew', avg_cost, opts.graph_size)
+        logger.log_value('eval/std', torch.std(cost), opts.graph_size)
 
     return avg_cost
 

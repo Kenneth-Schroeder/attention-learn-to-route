@@ -5,3 +5,7 @@ eval_logs
 args
 .git
 __pycache__
+saved_logs
+log_dir_thesis
+policy_dir_thesis
+args_thesis

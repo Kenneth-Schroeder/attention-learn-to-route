@@ -152,7 +152,11 @@ def run(opts):
         opts.epoch_start = epoch_resume + 1
 
     if opts.eval_only:
-        validate(model, val_dataset, opts)
+        graph_sizes = [20, 30, 40, 50, 100] # [5, 10, 20, 30, 40, 50, 100] # [20, 30, 40, 50, 100] # 
+        for graph_size in graph_sizes:
+            opts.graph_size = graph_size
+            val_dataset = problem.make_dataset(size=opts.graph_size, num_samples=opts.val_size, filename=opts.val_dataset, distribution=opts.data_distribution)
+            validate(model, val_dataset, opts, logger=tb_logger)
     else:
         for epoch in range(opts.epoch_start, opts.epoch_start + opts.n_epochs):
             train_epoch(

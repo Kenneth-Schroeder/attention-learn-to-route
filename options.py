@@ -17,7 +17,7 @@ def get_options(args=None):
     parser.add_argument('--graph_size', type=int, default=20, help="The size of the problem graph")
     parser.add_argument('--batch_size', type=int, default=512, help='Number of instances per batch during training')
     parser.add_argument('--epoch_size', type=int, default=1280000, help='Number of instances per epoch during training')
-    parser.add_argument('--val_size', type=int, default=10000,
+    parser.add_argument('--val_size', type=int, default=1000,
                         help='Number of instances used for reporting validation performance')
     parser.add_argument('--val_dataset', type=str, default=None, help='Dataset file to use for validation')
 
@@ -79,8 +79,10 @@ def get_options(args=None):
     parser.add_argument('--csv_row', type=int, default=0, help='Extract arguments from csv at specified row.')
 
     opts = parser.parse_args(args)
+    load_path = opts.load_path
+    eval_only= opts.eval_only
 
-    def get_args_from_csv(path, line_number):
+    def get_args_from_csv(path, line_number, load_path=None, eval_only=False):
         args = []
         with open(path) as f:
             arg_names = next(itertools.islice(csv.reader(f), 0, None)) # uses line 0 for arg names
@@ -89,10 +91,18 @@ def get_options(args=None):
                 if value != '': # will use default value if csv cell empty
                     args.append(f"--{name}")
                     args.append(value)
+            if load_path is not None:
+                args.append(f"--load_path")
+                args.append(load_path)
+            if eval_only:
+                args.append(f"--eval_only")
         return args
 
     if opts.args_from_csv:
-        csv_args = get_args_from_csv(opts.args_from_csv, opts.csv_row)
+        csv_args = get_args_from_csv(opts.args_from_csv, opts.csv_row, load_path, eval_only)
+        # load_path, eval_only for evaluation experiments
+        # evaluate with:
+        # python3 run.py --args_from_csv run_configs/kool-1.csv --csv_row 7 --load_path outputs/tsp_20/run_k07__20220411T002642/epoch-90.pt --eval_only
         opts = parser.parse_args(csv_args)
 
     if opts.seed is None:
