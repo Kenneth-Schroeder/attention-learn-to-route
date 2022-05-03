@@ -2,3 +2,4 @@ problem,graph_size,batch_size,epoch_size,val_size,val_dataset,model,embedding_di
 tsp,20,128,12800,1280,,attention,128,128,3,10.0,batch,1E-04,1E-04,0.99,300,1.0,0.8,rollout,0.05,,,dist,1,0,,run_k35_
 op,20,128,12800,1280,,attention,128,128,3,10.0,batch,1E-04,1E-04,0.99,300,1.0,0.8,rollout,0.05,,,dist,1,0,,run_k36_
 tsp,20,128,12800,1280,,attention,128,128,3,10.0,batch,1E-04,1E-04,0.99,300,1.0,0.8,,0.05,,,dist,1,0,,run_k37_
+op,20,128,12800,1280,,attention,128,128,3,10.0,batch,1E-04,1E-04,0.99,300,1.0,0.8,,0.05,,,dist,1,0,,run_k38_
