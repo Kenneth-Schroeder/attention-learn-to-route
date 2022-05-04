@@ -855,8 +855,8 @@ def random_run(opts, logger=None):
     result = collector.collect(n_episode=n_episodes)
 
     if logger is not None:
-        logger.write("eval/rew", opts.graph_size, {'rew': result['rew']})
-        logger.write("eval/std", opts.graph_size, {'std': result['rew_std']})
+        logger.write("rew", opts.graph_size, {'rew': result['rew']})
+        logger.write("std", opts.graph_size, {'std': result['rew_std']})
 
     print(f"Size: {opts.graph_size}, Mean: {result['rew']}, Std: {result['rew_std']}")
 
@@ -867,7 +867,7 @@ def random_run(opts, logger=None):
 
 def train(opts):
     # python3 run.py --saved_policy_path policy_dir/run_167__20220501T094242.pth
-    if opts.saved_policy_path:
+    if True: #opts.saved_policy_path
         writer = SummaryWriter(f"log_dir/{opts.run_name}")
         writer.add_text("args", str(opts))
         logger = TensorboardLogger(writer, train_interval=1000, test_interval=1, update_interval=1)
@@ -875,7 +875,8 @@ def train(opts):
         graph_sizes = [20, 30, 40, 50, 100] # [5, 10, 20, 30, 40, 50, 100]
         for graph_size in graph_sizes:
             opts.graph_size = graph_size
-            run_saved(opts, logger=logger)
+            random_run(opts, logger)
+            #run_saved(opts, logger=logger)
         return
     
     writer = SummaryWriter(f"log_dir/{opts.run_name}")
