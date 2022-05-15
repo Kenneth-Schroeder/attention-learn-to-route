@@ -867,16 +867,16 @@ def random_run(opts, logger=None):
 
 def train(opts):
     # python3 run.py --saved_policy_path policy_dir/run_167__20220501T094242.pth
-    if True: #opts.saved_policy_path
+    if opts.saved_policy_path:
         writer = SummaryWriter(f"log_dir/{opts.run_name}")
         writer.add_text("args", str(opts))
         logger = TensorboardLogger(writer, train_interval=1000, test_interval=1, update_interval=1)
 
-        graph_sizes = [20, 30, 40, 50, 100] # [5, 10, 20, 30, 40, 50, 100]
+        graph_sizes = [5, 10, 20, 30, 40, 50, 100] # [20, 30, 40, 50, 100] 
         for graph_size in graph_sizes:
             opts.graph_size = graph_size
-            random_run(opts, logger)
-            #run_saved(opts, logger=logger)
+            #random_run(opts, logger)
+            run_saved(opts, logger=logger)
         return
     
     writer = SummaryWriter(f"log_dir/{opts.run_name}")
