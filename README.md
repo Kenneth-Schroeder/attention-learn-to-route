@@ -18,8 +18,10 @@ This project extends on former work by Kool et al. and was forked from this [rep
 Dependencies are managed using [pip-tools](https://github.com/jazzband/pip-tools).
 Add new dependencies to `requirements.in` and run `pip-compile` to update `requirements.txt`.
 
+
+## remote execution tips
 <details>
-  <summary> remote server tips </summary>
+  <summary> expandable </summary>
   
   ## tmux command examples for remote server
   ```
