@@ -1,4 +1,4 @@
-# RL next generalization (building on wouterkool/attention-learn-to-route)
+# next gen(eralization) RL (building on wouterkool/attention-learn-to-route)
 This project extends on former work by Kool et al. and was forked from this [repo](https://github.com/wouterkool/attention-learn-to-route) with the main goal of comparing additional reinforcement learning algorithms on the TSP and OP and analyzing there generalization capabilities with regard to unlearned problem sizes.
 
 ## dependency management
