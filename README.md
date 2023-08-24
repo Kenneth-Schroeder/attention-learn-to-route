@@ -36,14 +36,13 @@ rsync -avP . <USER>@<SERVER>:<FULL_PATH>/attention-learn-to-route --delete --exc
 rsync -avP <USER>@<SERVER>:<FULL_PATH>/attention-learn-to-route/log_dir 
 ```
 
-## make sure all necessary folders exist on remote (like `policy_dir`)
-
 ## set up new experiments
 All experiment configurations are set up in `experiment_configurations.numbers`.
 The tables can be exported to csv and saved in the `run_configs/` directory.
 After copying this directory to the remote server, experiments can be run.
 
 ## run command examples
+make sure all necessary folders exist on remote (like `policy_dir`)
 ```
 bash scheduler.sh run_configs/<file>.csv <x_first_experiments>
 python3 run.py --args_from_csv run_configs/<file>.csv --csv_row <row_id> --gpu_id 0
@@ -54,7 +53,6 @@ The best policies are saved to the `policy_dir` directory.
 ```
 python3 run.py --saved_policy_path policy_dir/run_127__20230823T094935.pth --gpu_id 0
 ```
-
 
 ## preview log data using tensorboard
 ```

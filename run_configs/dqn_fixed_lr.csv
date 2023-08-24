@@ -1,6 +1,0 @@
-problem,graph_size,embedding_dim,hidden_dim,n_encode_layers,normalization,tanh_clipping,rl_algorithm,lr_actor,lr_critic1,lr_critic2,lr_scheduler_type,decay_lr,lr_decay,cyc_base_lr,cyc_max_lr,cyc_step_size_up,cyc_step_size_down,decay_eps,n_train_envs,n_test_envs,epc_factor,bs_factor,es_factor,te_factor,gamma,n_step,target_freq,eps_train,eps_test,repeat_per_collect,critic_class_str,eps_clip,vf_coef,ent_coef,gae_lambda,critics_embedding_dim,tau,alpha_ent,target_ent,lr_alpha_ent,n_epochs,seed,data_distribution,run_name
-tsp,20,128,128,3,instance,0.0,DQN,1E-03,,,exp,FALSE,0.9999,,,,,TRUE,64,64,2,20,100,20,1.0,1,50,0.5,0.2,,,,,,,,,,,,50,,dist,run_004_
-tsp,20,128,128,3,instance,0.0,DQN,1E-04,,,exp,FALSE,0.9999,,,,,TRUE,64,64,2,20,100,20,1.0,1,50,0.5,0.2,,,,,,,,,,,,50,,dist,run_005_
-tsp,20,128,128,3,instance,0.0,DQN,1E-05,,,exp,FALSE,0.9999,,,,,TRUE,64,64,2,20,100,20,1.0,1,50,0.5,0.2,,,,,,,,,,,,50,,dist,run_006_
-tsp,20,128,128,3,instance,0.0,DQN,1E-06,,,exp,FALSE,0.9999,,,,,TRUE,64,64,2,20,100,20,1.0,1,50,0.5,0.2,,,,,,,,,,,,50,,dist,run_007_
-tsp,20,128,128,3,instance,0.0,DQN,1E-02,,,exp,FALSE,0.9999,,,,,TRUE,64,64,2,20,100,20,1.0,1,50,0.5,0.2,,,,,,,,,,,,50,,dist,run_088_

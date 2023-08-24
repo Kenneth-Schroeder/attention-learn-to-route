@@ -1,1 +1,0 @@
-{"key_path": "log_dir/csvs/LR", "y_df_label": "LR", "x_df_label": "Steps", "y_display_label": "average solution length", "x_display_label": "number of samples trained", "run_names": ["run_20220324T203552", "run_20220324T203630"], "line_names": ["run_20220324T203552", "run_20220324T203630"], "plot_filename": "LR_PG_decay"}
