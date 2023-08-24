@@ -15,7 +15,7 @@ def get_options(args=None):
 
     # Data
     parser.add_argument('--problem', default='tsp', help="The problem to solve, default 'tsp'")
-    parser.add_argument('--graph_size', type=int, default=20, help="The size of the problem graph")
+    parser.add_argument('--graph_size', nargs="+", type=int, default=[20], help="The size of the problem graph, if multiple sizes are provided, training and test sets will contain an equal number of problems for each provided size.")
     parser.add_argument('--embedding_dim', type=int, default=128, help='Dimension of input embedding')
     parser.add_argument('--hidden_dim', type=int, default=256, help='Dimension of hidden layers in Enc/Dec')
     parser.add_argument('--n_encode_layers', type=int, default=5,
@@ -89,8 +89,10 @@ def get_options(args=None):
 
     parser.add_argument('--saved_policy_path', type=str, help='Name of saved model.')
     
+    parser.add_argument('--gpu_id', default=0, type=int, help='ID of gpu to use.')
     
     opts = parser.parse_args(args)
+    gpu_id = opts.gpu_id
     saved_policy_path = opts.saved_policy_path
 
     def get_opts_from_json(path, graph_size, saved_policy_path=None):
@@ -109,7 +111,11 @@ def get_options(args=None):
             for name, value in zip(arg_names, arg_values):
                 if value != '': # will use default value if csv cell empty
                     args.append(f"--{name}")
-                    if value.lower() in ('yes', 'true', 't', 'y', '1'):
+                    if name == 'graph_size':
+                        sizes = value.split()
+                        for size in sizes:
+                            args.append(size)
+                    elif value.lower() in ('yes', 'true', 't', 'y', '1'):
                         args.append("1")
                     elif value.lower() in ('no', 'false', 'f', 'n', '0'):
                         args.append("0")
@@ -134,7 +140,15 @@ def get_options(args=None):
 
     opts.use_cuda = torch.cuda.is_available()
     opts.run_name = "{}_{}".format(opts.run_name, time.strftime("%Y%m%dT%H%M%S"))
-
+    
+    opts.num_graph_sizes = len(opts.graph_size)
+    assert opts.n_train_envs % opts.num_graph_sizes == 0, "When providing multiple graph sizes, make sure the number of training envs is divisible by the number of graph sizes"
+    assert opts.n_test_envs % opts.num_graph_sizes == 0, "When providing multiple graph sizes, make sure the number of test envs is divisible by the number of graph sizes"
+    opts.train_envs_per_size = int(opts.n_train_envs/opts.num_graph_sizes)
+    opts.test_envs_per_size = int(opts.n_test_envs/opts.num_graph_sizes)
+    
+    opts.gpu_id = gpu_id
+    
     # save opts
     if not opts.saved_policy_path:
         with open(f"args/{opts.run_name}.txt", 'w') as f:

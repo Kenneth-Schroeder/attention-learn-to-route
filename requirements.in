@@ -1,0 +1,7 @@
+pip-tools
+torch
+numpy
+tianshou==0.4.11
+tqdm
+gym
+tensorboard

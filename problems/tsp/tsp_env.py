@@ -59,7 +59,8 @@ class TSP_env(gym.Env):
     action_batch = torch.tensor([masked_action], device=self.opts.device)
 
     self.batch_state = self.batch_state.update(action_batch)
-    reward = -TSP.get_step_cost(old_batch_state, self.batch_state).item()
+    cost = TSP.get_step_cost(old_batch_state, self.batch_state).item()
+    reward = -(cost*cost)
     done = self.batch_state.finished.item()
     info = {} # empty dict
 

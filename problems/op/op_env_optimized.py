@@ -10,11 +10,11 @@ class OP_env_optimized(gym.Env):
   """Custom Environment that follows gym interface"""
   metadata = {'render.modes': ['human']}
 
-  def __init__(self, opts):
+  def __init__(self, opts, graph_size):
     super(OP_env_optimized, self).__init__()
 
     self.opts = opts
-    self.num_nodes = opts.graph_size
+    self.num_nodes = graph_size
 
     obs_dict = {
       'loc': spaces.Box(low=0, high=1, shape=(self.num_nodes, 2)), # remaining node coordinates
@@ -74,7 +74,7 @@ class OP_env_optimized(gym.Env):
 
 
   def reset(self):
-    dataset = OP.make_dataset(size=self.opts.graph_size, num_samples=1, distribution=self.opts.data_distribution)
+    dataset = OP.make_dataset(size=self.num_nodes, num_samples=1, distribution=self.opts.data_distribution)
     depot = dataset.data[0]['depot']
     loc = dataset.data[0]['loc']
     self.coords = move_to(torch.cat((depot[None, :], loc), 0), self.opts.device)

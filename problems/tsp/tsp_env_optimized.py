@@ -12,11 +12,11 @@ class TSP_env_optimized(gym.Env):
   """Custom Environment that follows gym interface"""
   metadata = {'render.modes': ['human']}
 
-  def __init__(self, opts):
+  def __init__(self, opts, graph_size):
     super(TSP_env_optimized, self).__init__()
 
     self.opts = opts
-    self.num_nodes = opts.graph_size
+    self.num_nodes = graph_size
 
     obs_dict = {
       'loc': spaces.Box(low=0, high=1, shape=(self.num_nodes, 2)),

@@ -30,12 +30,22 @@ from custom_classes.random import RandomPolicy
 from custom_classes.pg import PGPolicy_custom
 from custom_classes.discrete_sac import DiscreteSACPolicy_custom
 
+epoch_counter = 0
+global_run_name = 'undefined'
+def save_policy(policy):
+    torch.save(policy.state_dict(), f"policy_dir/{global_run_name}_{epoch_counter}.pth")
+
+def update_epoch_counter(epoch):
+    global epoch_counter
+    epoch_counter = epoch
+
 class Categorical_logits(torch.distributions.categorical.Categorical):
     def __init__(self, logits, validate_args=None):
         super(Categorical_logits, self).__init__(logits=logits, validate_args=validate_args)
-
-
+        
+        
 def updatelog_eps_lr(decay_learning_rate, decay_epsilon, policy, eps, logger, epoch, lr_scheduler=None, env_step=None, batch_size=None, log=False):
+    update_epoch_counter(epoch)
     if decay_epsilon:
         policy.set_eps(eps)
     if log:
@@ -93,15 +103,18 @@ def run_DQN(opts, logger):
     num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
     episode_per_collect = num_train_envs * episode_per_collect_factor
 
-    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    if type(opts.graph_size) is list:
+        # make sure to collect enough. finished envs are reset and continue collecting - see tianshou/data/collector.py at line 366 of version 0.4.11
+        batch_size = max(opts.graph_size) * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    else:
+        batch_size = opts.graph_size * episode_per_collect
+        
     buffer_size = batch_size * buffer_size_factor
 
     step_per_epoch = batch_size * epoch_size_factor
 
     num_test_episodes = num_test_envs * test_episodes_factor # just collect this many episodes using policy and checks the performance
     step_per_collect = batch_size
-
-
 
     optimizer = optim.Adam([
         {'params': actor.parameters(), 'lr': learning_rate}
@@ -114,8 +127,19 @@ def run_DQN(opts, logger):
 
     
     # SubprocVectorEnv DummyVectorEnv
-    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
-    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
+    
+    if type(opts.graph_size) is list:
+        train_problems = []
+        test_problems = []
+        for size in opts.graph_size:
+            train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.train_envs_per_size)]
+            test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.test_envs_per_size)]
+    else:
+        train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_train_envs)]
+        test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_test_envs)]
+    
+    train_envs = ts.env.DummyVectorEnv(train_problems)
+    test_envs = ts.env.DummyVectorEnv(test_problems)
 
     policy = ts.policy.DQNPolicy(actor, optimizer, gamma, n_step, target_update_freq=target_freq)
     
@@ -124,12 +148,17 @@ def run_DQN(opts, logger):
     replay_buffer = ts.data.VectorReplayBuffer(total_size=buffer_size, buffer_num=num_of_buffer)
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
     test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
+    
+    def train_fn(epoch, env_step):
+        update_epoch_counter(epoch)
+        updatelog_eps_lr(decay_learning_rate, decay_epsilon, policy, eps_train/(epoch+1), logger, epoch, lr_scheduler=lr_scheduler, env_step=env_step, batch_size=batch_size, log=True)
 
     result = ts.trainer.offpolicy_trainer( # DOESN'T work with PPO, which makes sense
         policy, train_collector, test_collector, num_epochs, step_per_epoch, step_per_collect,
-        num_test_episodes, batch_size, update_per_step=1 / step_per_collect,
-        train_fn=lambda epoch, env_step: updatelog_eps_lr(decay_learning_rate, decay_epsilon, policy, eps_train/(epoch+1), logger, epoch, lr_scheduler=lr_scheduler, env_step=env_step, batch_size=batch_size, log=True),
+        num_test_episodes, batch_size, update_per_step= 1 / step_per_collect,
+        train_fn=train_fn,
         test_fn=lambda epoch, env_step: updatelog_eps_lr(decay_learning_rate, decay_epsilon, policy, eps_test/(epoch+1), logger, epoch, log=False),
+        save_best_fn=save_policy,
         #stop_fn=lambda mean_rewards: mean_rewards >= env.spec.reward_threshold,
         logger=logger
     )
@@ -174,7 +203,12 @@ def run_PG(opts, logger):
     num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
     episode_per_collect = num_train_envs * episode_per_collect_factor
 
-    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    if type(opts.graph_size) is list:
+        # make sure to collect enough. finished envs are reset and continue collecting - see tianshou/data/collector.py at line 366 of version 0.4.11
+        batch_size = max(opts.graph_size) * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    else:
+        batch_size = opts.graph_size * episode_per_collect
+        
     buffer_size = batch_size # no buffer_size_factor for onpolicy algorithms as buffer will be cleared after each network update
 
     step_per_epoch = batch_size * epoch_size_factor
@@ -194,8 +228,19 @@ def run_PG(opts, logger):
     lr_scheduler = lr_scheduler_options[opts.lr_scheduler_type]
 
     # SubprocVectorEnv DummyVectorEnv
-    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
-    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
+    
+    if type(opts.graph_size) is list:
+        train_problems = []
+        test_problems = []
+        for size in opts.graph_size:
+            train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.train_envs_per_size)]
+            test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.test_envs_per_size)]
+    else:
+        train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_train_envs)]
+        test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_test_envs)]
+    
+    train_envs = ts.env.DummyVectorEnv(train_problems)
+    test_envs = ts.env.DummyVectorEnv(test_problems)
 
     distribution_type = Categorical_logits
     policy = Policy_class(model=actor,
@@ -210,6 +255,10 @@ def run_PG(opts, logger):
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
     test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
 
+    def train_fn(epoch, env_step):
+        update_epoch_counter(epoch)
+        logger.write("train/learning_rate", epoch, {'LR':lr_scheduler.get_last_lr()[0]})
+    
     result = ts.trainer.onpolicy_trainer(
         policy=policy,
         train_collector=train_collector,
@@ -220,7 +269,8 @@ def run_PG(opts, logger):
         episode_per_test=num_test_episodes,
         batch_size=batch_size,
         episode_per_collect=episode_per_collect,
-        train_fn=lambda epoch, env_step: logger.write("train/learning_rate", epoch, {'LR':lr_scheduler.get_last_lr()[0]}),
+        train_fn=train_fn,
+        save_best_fn=save_policy,
         logger=logger
     )
 
@@ -266,7 +316,12 @@ def run_PPO(opts, logger):
     num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
     episode_per_collect = num_train_envs * episode_per_collect_factor
 
-    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    if type(opts.graph_size) is list:
+        # make sure to collect enough. finished envs are reset and continue collecting - see tianshou/data/collector.py at line 366 of version 0.4.11
+        batch_size = max(opts.graph_size) * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    else:
+        batch_size = opts.graph_size * episode_per_collect
+        
     buffer_size = batch_size # no buffer_size_factor for onpolicy algorithms as buffer will be cleared after each network update
 
     step_per_epoch = batch_size * epoch_size_factor
@@ -291,8 +346,18 @@ def run_PPO(opts, logger):
     }
     lr_scheduler = lr_scheduler_options[opts.lr_scheduler_type]
 
-    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
-    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
+    if type(opts.graph_size) is list:
+        train_problems = []
+        test_problems = []
+        for size in opts.graph_size:
+            train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.train_envs_per_size)]
+            test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.test_envs_per_size)]
+    else:
+        train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_train_envs)]
+        test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_test_envs)]
+    
+    train_envs = ts.env.DummyVectorEnv(train_problems)
+    test_envs = ts.env.DummyVectorEnv(test_problems)
     
 
     distribution_type = Categorical_logits
@@ -317,6 +382,10 @@ def run_PPO(opts, logger):
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
     test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
 
+    def train_fn(epoch, env_step):
+        update_epoch_counter(epoch)
+        logger.write("train/learning_rate", epoch, {'LR':lr_scheduler.get_last_lr()[0]})
+    
     result = ts.trainer.onpolicy_trainer(
         policy=policy,
         train_collector=train_collector,
@@ -328,7 +397,8 @@ def run_PPO(opts, logger):
         batch_size=batch_size,
         episode_per_collect=episode_per_collect,
         logger=logger,
-        train_fn=lambda epoch, env_step: logger.write("train/learning_rate", epoch, {'LR':lr_scheduler.get_last_lr()[0]})
+        train_fn=train_fn,
+        save_best_fn=save_policy
     )
 
     torch.save(policy.state_dict(), f"policy_dir/{opts.run_name}.pth")
@@ -379,7 +449,12 @@ def run_SAC(opts, logger):
     num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
     episode_per_collect = num_train_envs * episode_per_collect_factor
 
-    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    if type(opts.graph_size) is list:
+        # make sure to collect enough. finished envs are reset and continue collecting - see tianshou/data/collector.py at line 366 of version 0.4.11
+        batch_size = max(opts.graph_size) * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    else:
+        batch_size = opts.graph_size * episode_per_collect
+        
     buffer_size = batch_size * buffer_size_factor
 
     step_per_epoch = batch_size * epoch_size_factor
@@ -417,8 +492,18 @@ def run_SAC(opts, logger):
 
 
 
-    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
-    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
+    if type(opts.graph_size) is list:
+        train_problems = []
+        test_problems = []
+        for size in opts.graph_size:
+            train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.train_envs_per_size)]
+            test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.test_envs_per_size)]
+    else:
+        train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_train_envs)]
+        test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_test_envs)]
+    
+    train_envs = ts.env.DummyVectorEnv(train_problems)
+    test_envs = ts.env.DummyVectorEnv(test_problems)
     
     if alpha == None:
         target_entropy = target_ent
@@ -443,10 +528,15 @@ def run_SAC(opts, logger):
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
     test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
 
+    def train_fn(epoch, env_step):
+        update_epoch_counter(epoch)
+        updatelog_lr(decay_learning_rate, logger, lr_schedulers=[lr_scheduler_actor, lr_scheduler_critic1, lr_scheduler_critic2], env_step=env_step, log=True, labels=['ActorLR', 'Critic1LR', 'Critic2LR'])
+    
     result = ts.trainer.offpolicy_trainer(
         policy, train_collector, test_collector, num_epochs, step_per_epoch, step_per_collect,
         num_test_episodes, batch_size, update_per_step=1 / step_per_collect,
-        train_fn=lambda epoch, env_step: updatelog_lr(decay_learning_rate, logger, lr_schedulers=[lr_scheduler_actor, lr_scheduler_critic1, lr_scheduler_critic2], env_step=env_step, log=True, labels=['ActorLR', 'Critic1LR', 'Critic2LR']),
+        train_fn=train_fn,
+        save_best_fn=save_policy,
         logger=logger
     )
 
@@ -493,8 +583,13 @@ def run_A2C(opts, logger):
 
     num_of_buffer = num_train_envs # they can't differ, or VectorReplayBuffer will introduce bad data to training
     episode_per_collect = num_train_envs * episode_per_collect_factor
-
-    batch_size = opts.graph_size * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    
+    if type(opts.graph_size) is list:
+        # make sure to collect enough. finished envs are reset and continue collecting - see tianshou/data/collector.py at line 366 of version 0.4.11
+        batch_size = max(opts.graph_size) * episode_per_collect # has to be smaller or equal to buffer_size, defines minibatch size in policy training
+    else:
+        batch_size = opts.graph_size * episode_per_collect
+        
     buffer_size = batch_size # no buffer_size_factor for onpolicy algorithms as buffer will be cleared after each network update
 
     step_per_epoch = batch_size * epoch_size_factor
@@ -517,8 +612,19 @@ def run_A2C(opts, logger):
     lr_scheduler = lr_scheduler_options[opts.lr_scheduler_type]
 
     # SubprocVectorEnv DummyVectorEnv
-    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)]) #DummyVectorEnv, SubprocVectorEnv
-    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
+    
+    if type(opts.graph_size) is list:
+        train_problems = []
+        test_problems = []
+        for size in opts.graph_size:
+            train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.train_envs_per_size)]
+            test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.test_envs_per_size)]
+    else:
+        train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_train_envs)]
+        test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_test_envs)]
+    
+    train_envs = ts.env.DummyVectorEnv(train_problems)
+    test_envs = ts.env.DummyVectorEnv(test_problems)
 
     distribution_type = Categorical_logits
     policy = ts.policy.A2CPolicy(actor=actor,
@@ -536,6 +642,10 @@ def run_A2C(opts, logger):
     train_collector = ts.data.Collector(policy, train_envs, replay_buffer, exploration_noise=False)
     test_collector = ts.data.Collector(policy, test_envs, exploration_noise=False)
 
+    def train_fn(epoch, env_step):
+        update_epoch_counter(epoch)
+        logger.write("train/learning_rate", epoch, {'LR':lr_scheduler.get_last_lr()[0]})
+    
     result = ts.trainer.onpolicy_trainer(
         policy=policy,
         train_collector=train_collector,
@@ -546,7 +656,8 @@ def run_A2C(opts, logger):
         episode_per_test=num_test_episodes,
         batch_size=batch_size,
         episode_per_collect=episode_per_collect,
-        train_fn=lambda epoch, env_step: logger.write("train/learning_rate", epoch, {'LR':lr_scheduler.get_last_lr()[0]}),
+        train_fn=train_fn,
+        save_best_fn=save_policy,
         logger=logger
     )
 
@@ -585,9 +696,21 @@ def run_custom_REINFORCE(opts, log_results=False):
     num_train_envs = batch_size = 16
     num_episodes = opts.n_epochs
     num_batches_per_episode = 20
+    
     # DummyVectorEnv, SubprocVectorEnv
-    train_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_train_envs)])
-    test_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_test_envs)])
+    
+    if type(opts.graph_size) is list:
+        train_problems = []
+        test_problems = []
+        for size in opts.graph_size:
+            train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.train_envs_per_size)]
+            test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(opts.test_envs_per_size)]
+    else:
+        train_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_train_envs)]
+        test_problems += [lambda: problem_env_class[opts.problem](opts, size) for _ in range(num_test_envs)]
+    
+    train_envs = ts.env.DummyVectorEnv(train_problems)
+    test_envs = ts.env.DummyVectorEnv(test_problems)
 
     for i in range(num_episodes):
         for j in range(num_batches_per_episode):
@@ -742,7 +865,7 @@ def run_saved(opts, log_solutions=False, logger=None, deterministic_eval=True):
 
     num_eval_envs = 10
     num_runs = 100
-    eval_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts) for _ in range(num_eval_envs)])
+    eval_envs = ts.env.DummyVectorEnv([lambda: problem_env_class[opts.problem](opts, opts.graph_size) for _ in range(num_eval_envs)])
     
     # POLICIES /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     distribution_type = Categorical_logits
@@ -864,21 +987,20 @@ def random_run(opts, logger=None):
 
 
 
+def evaluate(opts):
+    writer = SummaryWriter(f"log_dir/{opts.run_name}")
+    writer.add_text("args", str(opts))
+    logger = TensorboardLogger(writer, train_interval=1000, test_interval=1, update_interval=1)
+    
+    graph_sizes = [5, 10, 20, 30, 40, 50, 100] # [20, 30, 40, 50, 100] 
+    for graph_size in graph_sizes:
+        opts.graph_size = graph_size
+        #random_run(opts, logger)
+        run_saved(opts, logger=logger)
+    return
+
 
 def train(opts):
-    # python3 run.py --saved_policy_path policy_dir/run_167__20220501T094242.pth
-    if opts.saved_policy_path:
-        writer = SummaryWriter(f"log_dir/{opts.run_name}")
-        writer.add_text("args", str(opts))
-        logger = TensorboardLogger(writer, train_interval=1000, test_interval=1, update_interval=1)
-
-        graph_sizes = [5, 10, 20, 30, 40, 50, 100] # [20, 30, 40, 50, 100] 
-        for graph_size in graph_sizes:
-            opts.graph_size = graph_size
-            #random_run(opts, logger)
-            run_saved(opts, logger=logger)
-        return
-    
     writer = SummaryWriter(f"log_dir/{opts.run_name}")
     writer.add_text("args", str(opts))
     logger = TensorboardLogger(writer, train_interval=1000, test_interval=1, update_interval=1)
@@ -901,18 +1023,22 @@ def train(opts):
 
 
 def run(opts):
-
     # Pretty print the run args
     pp.pprint(vars(opts))
-
+    
     # Set the random seed
     torch.manual_seed(opts.seed)
     np.random.seed(opts.seed) # for tianshou random components
-
+    
     # Set the device
-    opts.device = torch.device("cuda:0" if opts.use_cuda else "cpu")
-
-    train(opts)
+    opts.device = torch.device(f"cuda:{opts.gpu_id}" if opts.use_cuda else "cpu")
+    
+    global global_run_name
+    global_run_name = opts.run_name
+    if opts.saved_policy_path:
+        evaluate(opts) # python3 run.py --saved_policy_path policy_dir/run_167__20220501T094242.pth
+    else:
+        train(opts)
 
 
 if __name__ == "__main__":
