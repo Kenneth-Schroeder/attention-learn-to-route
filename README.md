@@ -32,8 +32,8 @@ Ctrl+D   # delete window
 
 ## copy data between remote server and local repo quickly using rsync
 ```
-rsync -avP . <USER>@<SERVER>:<FULL_PATH>/attention-learn-to-route --delete --exclude-from rsync_excludes.txt
-rsync -avP <USER>@<SERVER>:<FULL_PATH>/attention-learn-to-route/log_dir 
+rsync -avP . <USER>@<SERVER>:<FULL_PATH>/attention-next-gen-rl --delete --exclude-from rsync_excludes.txt
+rsync -avP <USER>@<SERVER>:<FULL_PATH>/attention-next-gen-rl/log_dir 
 ```
 
 ## set up new experiments
@@ -62,7 +62,7 @@ tensorboard --logdir log_dir/ --reload_multifile TRUE
 ## preparing log data for visualizations/plots
 ```
 git clone https://github.com/Kenneth-Schroeder/tensorboard-aggregator
-python3 aggregator.py --path ../attention-learn-to-route/log_dir/trainings
+python3 aggregator.py --path ../attention-next-gen-rl/log_dir/trainings
 ```
 
 ## visualize/plot log data using code in plotting.ipynb
