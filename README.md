@@ -18,23 +18,28 @@ This project extends on former work by Kool et al. and was forked from this [rep
 Dependencies are managed using [pip-tools](https://github.com/jazzband/pip-tools).
 Add new dependencies to `requirements.in` and run `pip-compile` to update `requirements.txt`.
 
-## tmux command examples
-```
-tmux new -s Kenneth
-tmux attach
+<details>
+  <summary>
+  	## remote server tips
+  </summary>
+  ## tmux command examples for remote server
+  ```
+  tmux new -s Kenneth
+  tmux attach
 
-Ctrl+B [ # scroll mode, q to quit
-Ctrl+B D # detach
-Ctrl+B W # window overview
-Ctrl+B C # create window
-Ctrl+D   # delete window
-```
+  Ctrl+B [ # scroll mode, q to quit
+  Ctrl+B D # detach
+  Ctrl+B W # window overview
+  Ctrl+B C # create window
+  Ctrl+D   # delete window
+  ```
 
-## copy data between remote server and local repo quickly using rsync
-```
-rsync -avP . <USER>@<SERVER>:<FULL_PATH>/attention-next-gen-rl --delete --exclude-from rsync_excludes.txt
-rsync -avP <USER>@<SERVER>:<FULL_PATH>/attention-next-gen-rl/log_dir 
-```
+  ## copy data between remote server and local repo quickly using rsync
+  ```
+  rsync -avP . <USER>@<SERVER>:<FULL_PATH>/attention-next-gen-rl --delete --exclude-from rsync_excludes.txt
+  rsync -avP <USER>@<SERVER>:<FULL_PATH>/attention-next-gen-rl/log_dir 
+  ```
+</details>
 
 ## set up new experiments
 All experiment configurations are set up in `experiment_configurations.numbers`.
