@@ -20,6 +20,7 @@ Add new dependencies to `requirements.in` and run `pip-compile` to update `requi
 
 <details>
   <summary> remote server tips </summary>
+  
   ## tmux command examples for remote server
   ```
   tmux new -s Kenneth
@@ -37,6 +38,7 @@ Add new dependencies to `requirements.in` and run `pip-compile` to update `requi
   rsync -avP . <USER>@<SERVER>:<FULL_PATH>/attention-next-gen-rl --delete --exclude-from rsync_excludes.txt
   rsync -avP <USER>@<SERVER>:<FULL_PATH>/attention-next-gen-rl/log_dir 
   ```
+  
 </details>
 
 ## set up new experiments
