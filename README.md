@@ -1,6 +1,19 @@
 # next gen(eralization) RL (building on wouterkool/attention-learn-to-route)
 This project extends on former work by Kool et al. and was forked from this [repo](https://github.com/wouterkool/attention-learn-to-route) with the main goal of comparing additional reinforcement learning algorithms on the TSP and OP and analyzing there generalization capabilities with regard to unlearned problem sizes.
 
+## directory overview
+- `args/` contains all configuration arguments of started experiments
+- `custom_classes/` contains custom tianshou classes
+- `eval_logs/` contains optionally saved logs of evaluation runs of trained policies
+- `figure_metas/` contains metadata for saved figures for easy adjustments to existing figures
+- `figures/` contains created figures
+- `nets/` contains torch modules for the attention model and value estimators e.g.
+- `problems/` contains code for the tsp and op environments
+- `run_configs/` contains csvs exported from `experiment_configurations.numbers` with specific run configurations
+- `utils/` contains utility code
+- `log_dir/` contains training and evaluation logs and results
+- `policy_dir/` contains trained tianshou policies that can be used for evaluation runs
+
 ## dependency management
 Dependencies are managed using [pip-tools](https://github.com/jazzband/pip-tools).
 Add new dependencies to `requirements.in` and run `pip-compile` to update `requirements.txt`.
