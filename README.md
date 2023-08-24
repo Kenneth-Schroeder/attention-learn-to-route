@@ -19,9 +19,7 @@ Dependencies are managed using [pip-tools](https://github.com/jazzband/pip-tools
 Add new dependencies to `requirements.in` and run `pip-compile` to update `requirements.txt`.
 
 <details>
-  <summary>
-  	## remote server tips
-  </summary>
+  <summary> remote server tips </summary>
   ## tmux command examples for remote server
   ```
   tmux new -s Kenneth
