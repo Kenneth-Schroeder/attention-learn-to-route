@@ -126,8 +126,13 @@ def get_options(args=None):
             args.append(saved_policy_path)
         return args
 
+    epoch_suffix = ''
     if opts.saved_policy_path != None:
-        args_path = f"args/{Path(saved_policy_path).stem}.txt"
+        args_stem = Path(saved_policy_path).stem
+        if len(split_stem := args_stem.split('_')) > 4:
+            args_stem = '_'.join(split_stem[:4])
+            epoch_suffix = split_stem[4]
+        args_path = f"args/{args_stem}.txt"
         opts = get_opts_from_json(args_path, opts.graph_size, opts.saved_policy_path)
     elif opts.args_from_csv:
         csv_args = get_args_from_csv(opts.args_from_csv, opts.csv_row)
@@ -139,7 +144,7 @@ def get_options(args=None):
         opts.seed = random.randint(1,9999)
 
     opts.use_cuda = torch.cuda.is_available()
-    opts.run_name = "{}_{}".format(opts.run_name, time.strftime("%Y%m%dT%H%M%S"))
+    opts.run_name = "{}_{}_{}".format(opts.run_name, epoch_suffix, time.strftime("%Y%m%dT%H%M%S"))
     
     opts.num_graph_sizes = len(opts.graph_size)
     assert opts.n_train_envs % opts.num_graph_sizes == 0, "When providing multiple graph sizes, make sure the number of training envs is divisible by the number of graph sizes"
