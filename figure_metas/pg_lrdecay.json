@@ -1,1 +1,0 @@
-{"key_path": "log_dir/csvs/testreward", "y_df_label": "test/reward", "x_df_label": "Steps", "y_display_label": "average solution length", "x_display_label": "number of samples trained", "run_names": ["run_20220318T195523", "run_20220319T010421", "run_20220319T011806"], "line_names": ["*1.0000 decay", "*0.9800 decay", "*0.9997 decay"], "plot_filename": "pg_lrdecay"}

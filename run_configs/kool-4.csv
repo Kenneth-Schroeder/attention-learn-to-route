@@ -1,7 +1,0 @@
-problem,graph_size,batch_size,epoch_size,val_size,val_dataset,model,embedding_dim,hidden_dim,n_encode_layers,tanh_clipping,normalization,lr_model,lr_critic,lr_decay,n_epochs,max_grad_norm,exp_beta,baseline,bl_alpha,bl_warmup_epochs,eval_batch_size,data_distribution,log_step,epoch_start,seed,run_name
-tsp,20,512,51200,10000,,attention,128,128,3,10.0,batch,1E-04,1E-04,1.0,500,1.0,0.8,rollout,0.05,,1024,dist,1,0,1234,run_k31_
-tsp,20,512,51200,10000,,attention,128,128,3,10.0,batch,1E-04,1E-04,1.0,500,1.0,0.8,rollout,0.05,,1024,dist,1,0,,run_k32_
-op,30,128,12800,1280,,attention,128,128,3,10.0,instance,1E-04,1E-04,0.98,100,1.0,0.8,rollout,0.05,,1024,dist,1,0,,run_k29_
-op,40,128,12800,1280,,attention,128,128,3,10.0,instance,1E-04,1E-04,0.98,100,1.0,0.8,rollout,0.05,,1024,dist,1,0,,run_k30_
-op,100,128,12800,1280,,attention,128,128,3,10.0,instance,1E-04,1E-04,0.98,100,1.0,0.8,rollout,0.05,,1024,dist,1,0,,run_k33_
-op,200,128,12800,1280,,attention,128,128,3,10.0,instance,1E-04,1E-04,0.98,100,1.0,0.8,rollout,0.05,,1024,dist,1,0,,run_k34_
