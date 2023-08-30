@@ -1,0 +1,5 @@
+pip-tools
+torch
+tensorboard_logger
+tensorflow
+tqdm
