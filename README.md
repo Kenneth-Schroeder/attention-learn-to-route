@@ -74,3 +74,6 @@ python3 aggregator.py --path ../attention-next-gen-rl/log_dir/trainings
 
 ## visualize/plot log data using code in plotting.ipynb
 Plots are saved in `figures/` and corresponding meta data to each plot is saved in `figure_metas/`.
+
+## collecting comparison data for Kool et al.'s version
+Please use the branch `master_bench` for collecting comparison data for Kool et al.'s version.
