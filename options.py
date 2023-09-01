@@ -129,9 +129,11 @@ def get_options(args=None):
     epoch_suffix = ''
     if opts.saved_policy_path != None:
         args_stem = Path(saved_policy_path).stem
-        if len(split_stem := args_stem.split('_')) > 4:
-            args_stem = '_'.join(split_stem[:4])
-            epoch_suffix = split_stem[4]
+        split_stem = args_stem.split('_')
+        stripped_split_stem = [string for string in split_stem if len(string) > 0]
+        if len(stripped_split_stem) > 3:
+            args_stem = '_'.join(split_stem[:-1])
+            epoch_suffix = split_stem[-1]
         args_path = f"args/{args_stem}.txt"
         opts = get_opts_from_json(args_path, opts.graph_size, opts.saved_policy_path)
     elif opts.args_from_csv:
